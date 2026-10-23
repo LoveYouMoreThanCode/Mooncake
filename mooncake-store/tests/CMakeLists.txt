@@ -545,6 +545,8 @@ add_ha_core_test(simple_ha_callback_barrier_test
                  ha/simple_ha/simple_ha_callback_barrier_test.cpp)
 add_ha_core_test(simple_ha_restore_lease_test
                  ha/simple_ha/simple_ha_restore_lease_test.cpp)
+add_ha_core_test(simple_ha_snapshot_cursor_test
+                 ha/simple_ha/simple_ha_snapshot_cursor_test.cpp)
 
 foreach(
   target
