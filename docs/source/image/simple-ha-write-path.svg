@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" role="img" aria-label="写请求经过 leader 与 ready 门禁、分配索引、应用 map、追加 WAL，再返回客户端；备定时拉取并应用">
+  <style>
+    .d-box { fill: #fbfcfa; stroke: #b7c4be; }
+    .d-box-muted { fill: #e9eeeb; stroke: #d4dcd7; }
+    .d-box-accent { fill: #dceee9; stroke: #0d6b5f; }
+    .d-box-warn { fill: #f5e8d8; stroke: #9a5a12; }
+    .d-text { fill: #1b2320; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-label { fill: #60706a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-accent-text { fill: #0d6b5f; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-warn-text { fill: #9a5a12; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-line { stroke: #b7c4be; fill: none; }
+    .d-muted-line { stroke: #60706a; fill: none; }
+    .d-accent-line { stroke: #0d6b5f; fill: none; }
+    .d-warn-line { stroke: #9a5a12; fill: none; }
+    .d-marker-muted { fill: #60706a; }
+    .d-marker-accent { fill: #0d6b5f; }
+    .d-marker-warn { fill: #9a5a12; }
+  </style>
+  <defs>
+    <marker id="d2-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-muted"/></marker>
+    <marker id="d2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-accent"/></marker>
+    <marker id="d2-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-warn"/></marker>
+  </defs>
+  <rect x="20" y="40" width="90" height="44" rx="6" class="d-box"/>
+  <text x="65" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">client write</text>
+  <rect x="140" y="40" width="150" height="44" rx="6" class="d-box-accent"/>
+  <text x="215" y="62" text-anchor="middle" class="d-accent-text" font-size="11" dominant-baseline="middle">leader &amp;&amp; ready?</text>
+  <rect x="320" y="40" width="110" height="44" rx="6" class="d-box"/>
+  <text x="375" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">assign index</text>
+  <rect x="460" y="40" width="100" height="44" rx="6" class="d-box"/>
+  <text x="510" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">apply map</text>
+  <rect x="590" y="40" width="120" height="44" rx="6" class="d-box"/>
+  <text x="650" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">append WAL</text>
+  <rect x="740" y="40" width="130" height="44" rx="6" class="d-box"/>
+  <text x="805" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">ack client</text>
+  <path d="M110 62 H140" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+  <path d="M290 62 H320" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+  <path d="M430 62 H460" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+  <path d="M560 62 H590" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+  <path d="M710 62 H740" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+  <path d="M215 84 V140" class="d-warn-line" stroke-width="1.2" marker-end="url(#d2-w)"/>
+  <text x="224" y="112" class="d-label" font-size="10">no</text>
+  <rect x="140" y="140" width="150" height="40" rx="6" class="d-box-warn"/>
+  <text x="215" y="160" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">not-primary / LB 切流</text>
+  <path d="M650 84 V170" class="d-accent-line" stroke-width="1.3" marker-end="url(#d2-a)"/>
+  <text x="660" y="130" class="d-label" font-size="10">replicate</text>
+  <rect x="590" y="170" width="140" height="44" rx="6" class="d-box-accent"/>
+  <text x="660" y="192" text-anchor="middle" class="d-accent-text" font-size="11" dominant-baseline="middle">standby pull</text>
+  <path d="M660 214 V240" class="d-accent-line" stroke-width="1.3" marker-end="url(#d2-a)"/>
+  <rect x="590" y="240" width="140" height="48" rx="6" class="d-box-accent"/>
+  <text x="660" y="257" text-anchor="middle" class="d-accent-text" font-size="11">apply in order</text>
+  <text x="660" y="274" text-anchor="middle" class="d-label" font-size="10">applied = S</text>
+  
+</svg>

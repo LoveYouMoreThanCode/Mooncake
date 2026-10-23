@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" role="img" aria-label="WAL 环形缓冲区：first 101、last 200；applied 150 追得上，applied 95 出现 gap 需要全量快照">
+  <style>
+    .d-box { fill: #fbfcfa; stroke: #b7c4be; }
+    .d-box-muted { fill: #e9eeeb; stroke: #d4dcd7; }
+    .d-box-accent { fill: #dceee9; stroke: #0d6b5f; }
+    .d-box-warn { fill: #f5e8d8; stroke: #9a5a12; }
+    .d-text { fill: #1b2320; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-label { fill: #60706a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-accent-text { fill: #0d6b5f; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-warn-text { fill: #9a5a12; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-line { stroke: #b7c4be; fill: none; }
+    .d-muted-line { stroke: #60706a; fill: none; }
+    .d-accent-line { stroke: #0d6b5f; fill: none; }
+    .d-warn-line { stroke: #9a5a12; fill: none; }
+    .d-marker-muted { fill: #60706a; }
+    .d-marker-accent { fill: #0d6b5f; }
+    .d-marker-warn { fill: #9a5a12; }
+  </style>
+  <defs>
+    <marker id="d3-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-muted"/></marker>
+    <marker id="d3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-accent"/></marker>
+    <marker id="d3-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-warn"/></marker>
+  </defs>
+  <text x="24" y="30" class="d-label" font-size="11">WAL ring（内存）</text>
+  <rect x="24" y="44" width="640" height="46" rx="6" class="d-box"/>
+  <line x1="104" y1="44" x2="104" y2="90" class="d-line" stroke-width="1"/>
+  <line x1="184" y1="44" x2="184" y2="90" class="d-line" stroke-width="1"/>
+  <line x1="264" y1="44" x2="264" y2="90" class="d-line" stroke-width="1"/>
+  <line x1="344" y1="44" x2="344" y2="90" class="d-line" stroke-width="1"/>
+  <line x1="424" y1="44" x2="424" y2="90" class="d-line" stroke-width="1"/>
+  <line x1="504" y1="44" x2="504" y2="90" class="d-line" stroke-width="1"/>
+  <line x1="584" y1="44" x2="584" y2="90" class="d-line" stroke-width="1"/>
+  <rect x="584" y="44" width="80" height="46" class="d-box-muted" stroke-dasharray="4 4"/>
+  <text x="64" y="72" text-anchor="middle" class="d-text" font-size="11">101</text>
+  <text x="144" y="72" text-anchor="middle" class="d-text" font-size="11">102</text>
+  <text x="224" y="72" text-anchor="middle" class="d-text" font-size="11">103</text>
+  <text x="304" y="72" text-anchor="middle" class="d-label" font-size="11">…</text>
+  <text x="384" y="72" text-anchor="middle" class="d-text" font-size="11">198</text>
+  <text x="464" y="72" text-anchor="middle" class="d-text" font-size="11">199</text>
+  <text x="544" y="72" text-anchor="middle" class="d-text" font-size="11">200</text>
+  <text x="624" y="72" text-anchor="middle" class="d-label" font-size="10">free</text>
+  <text x="24" y="114" class="d-label" font-size="10">first = 101</text>
+  <text x="544" y="114" text-anchor="middle" class="d-label" font-size="10">last = 200</text>
+  <text x="624" y="114" text-anchor="middle" class="d-label" font-size="9">可覆盖</text>
+  <rect x="24" y="150" width="140" height="36" rx="6" class="d-box-accent"/>
+  <text x="94" y="168" text-anchor="middle" class="d-accent-text" font-size="11" dominant-baseline="middle">applied = 150</text>
+  <path d="M164 168 H220" class="d-accent-line" stroke-width="1.3" marker-end="url(#d3-a)"/>
+  <rect x="220" y="150" width="180" height="36" rx="6" class="d-box"/>
+  <text x="310" y="168" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">拉 151 … 200</text>
+  <text x="420" y="168" class="d-accent-text" font-size="11">追得上</text>
+  <rect x="24" y="210" width="140" height="36" rx="6" class="d-box-warn"/>
+  <text x="94" y="228" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">applied = 95</text>
+  <path d="M164 228 H220" class="d-warn-line" stroke-width="1.3" marker-end="url(#d3-w)"/>
+  <rect x="220" y="210" width="180" height="36" rx="6" class="d-box"/>
+  <text x="310" y="228" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">95 + 1 &lt; 101</text>
+  <path d="M400 228 H460" class="d-warn-line" stroke-width="1.3" marker-end="url(#d3-w)"/>
+  <rect x="460" y="210" width="200" height="36" rx="6" class="d-box-warn"/>
+  <text x="560" y="228" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">GAP → 进程内重装</text>
+  <text x="680" y="228" class="d-warn-text" font-size="11">追不上</text>
+  <rect x="24" y="290" width="140" height="36" rx="6" class="d-box-accent"/>
+  <text x="94" y="308" text-anchor="middle" class="d-accent-text" font-size="11" dominant-baseline="middle">全量扫描 at S</text>
+  <path d="M164 308 H220" class="d-accent-line" stroke-width="1.3" marker-end="url(#d3-a)"/>
+  <rect x="220" y="290" width="200" height="36" rx="6" class="d-box"/>
+  <text x="320" y="308" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">扫完装好 → S+1 追</text>
+  <path d="M420 308 H480" class="d-accent-line" stroke-width="1.3" marker-end="url(#d3-a)"/>
+  <rect x="480" y="290" width="180" height="36" rx="6" class="d-box-warn"/>
+  <text x="570" y="308" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">S+1 被覆盖 → 重装</text>
+  <text x="680" y="308" class="d-warn-text" font-size="11">不 pin，重试</text>
+  <text x="24" y="340" class="d-label" font-size="10">新备加入：握手拿 base_index=S → 游标扫描 → 从 S+1 追</text>
+  <line x1="24" y1="352" x2="664" y2="352" class="d-line" stroke-width="1"/>
+  <text x="24" y="376" class="d-label" font-size="10">约束：ring 窗口 ≥ 扫描时长 × 峰值写速率</text>
+</svg>
