@@ -24,6 +24,9 @@ class WrappedMasterService {
     void SetBatchOpLogTerminalCallback(
         OrderedOpLogWriter::TerminalCallback callback);
     void StopBatchOpLogWriter();
+    // Simple HA leader service and tests need the underlying master service
+    // to read the in-memory WAL and enumerate snapshot entries.
+    MasterService& GetMasterService() { return master_service_; }
     // Constructor with optional metadata-cleanup-on-timeout configuration.
     // - http_metadata_server: in-process pointer used when the HTTP metadata
     //   server is co-located in the master process (nullptr = not co-located).

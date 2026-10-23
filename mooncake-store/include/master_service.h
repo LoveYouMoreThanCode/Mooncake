@@ -76,6 +76,8 @@ class HaKvBackend;
 class HttpMetadataServer;
 class OpLogBatchStorage;
 class OrderedOpLogWriter;
+class SimpleHaWal;
+class SimpleHaLeaderService;
 
 namespace test {
 class MasterServiceTestPeer;
@@ -123,6 +125,7 @@ class MasterService {
     friend class MasterStoreBackend;
     friend class test::MasterServiceTestPeer;
     friend class ClientOffboardingWorker;
+    friend class SimpleHaLeaderService;
 
    public:
     using NoFProbeFn =
@@ -2362,6 +2365,10 @@ class MasterService {
     const bool enable_oplog_;
     const bool weight_management_mutations_enabled_;
     const uint32_t oplog_batch_max_entries_;
+    const bool enable_simple_ha_;
+    const uint64_t simple_ha_wal_max_batches_;
+    const uint64_t simple_ha_wal_max_bytes_;
+    const DurablePrefix initial_durable_prefix_;
     const uint64_t restore_repair_durable_timeout_ms_;
 
     // cluster id for persistent sub directory
@@ -2634,6 +2641,7 @@ class MasterService {
     std::shared_ptr<HaKvBackend> batch_oplog_kv_backend_;
     std::unique_ptr<OpLogBatchStorage> batch_oplog_storage_;
     std::unique_ptr<OrderedOpLogWriter> ordered_oplog_writer_;
+    std::shared_ptr<SimpleHaWal> simple_ha_wal_;
     BatchOpLogWriterFactory batch_oplog_writer_factory_;
 
     // OpLog publishing helpers
@@ -2645,6 +2653,7 @@ class MasterService {
         const std::vector<Replica::Descriptor>& replicas) const;
     ErrorCode InitializeBatchOpLogWriter(std::shared_ptr<HaKvBackend> backend,
                                          bool require_fenced_writer);
+    ErrorCode InitializeSimpleHaWriter();
     tl::expected<uint64_t, ErrorCode> AppendOpLogVisibleBeforeDurable(
         OpType type, const std::string& tenant_id, const std::string& key,
         const std::string& payload);

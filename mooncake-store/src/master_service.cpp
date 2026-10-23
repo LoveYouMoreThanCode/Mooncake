@@ -200,12 +200,18 @@ MasterService::MasterService(const MasterServiceConfig& config)
                            config.dynamic_replication_heat_window_seconds,
                            config.dynamic_replication_admission_qps_threshold,
                            config.dynamic_replication_max_memory_replicas),
-      enable_oplog_(config.enable_ha && config.enable_oplog &&
+      enable_oplog_(config.enable_ha &&
+                    (config.enable_oplog || config.enable_simple_ha) &&
                     ha::HaBackendSupportsOpLog(config.ha_backend_type)),
       weight_management_mutations_enabled_(
           !enable_oplog_ ||
-          config.weight_management_oplog_capability_confirmed),
+          (!config.enable_simple_ha &&
+           config.weight_management_oplog_capability_confirmed)),
       oplog_batch_max_entries_(config.oplog_batch_max_entries),
+      enable_simple_ha_(config.enable_simple_ha),
+      simple_ha_wal_max_batches_(config.simple_ha_wal_max_batches),
+      simple_ha_wal_max_bytes_(config.simple_ha_wal_max_bytes),
+      initial_durable_prefix_(config.initial_durable_prefix),
       restore_repair_durable_timeout_ms_(
           config.restore_repair_durable_timeout_ms),
       cluster_id_(config.cluster_id),
@@ -384,7 +390,13 @@ MasterService::MasterService(const MasterServiceConfig& config)
     kv_track_tenant_epochs_ = KvEventsEnabled();
 
     if (enable_oplog_ && !cluster_id_.empty()) {
-        if (config.ha_backend_connstring.empty()) {
+        if (config.enable_simple_ha) {
+            const ErrorCode err = InitializeSimpleHaWriter();
+            if (err != ErrorCode::OK) {
+                throw std::runtime_error(fmt::format(
+                    "failed to create Simple HA writer: {}", toString(err)));
+            }
+        } else if (config.ha_backend_connstring.empty()) {
             LOG(INFO) << "Skipping automatic batch-record OpLog writer "
                          "initialization; no HA backend connstring configured";
         } else {

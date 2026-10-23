@@ -72,6 +72,9 @@ set(MOONCAKE_STORE_MASTER_SOURCES
     ha/kv/ha_kv_backend_factory.cpp
     ha/standby_controller.cpp
     ha/standby_metadata_store.cpp
+    ha/simple_ha/simple_ha_wal.cpp
+    ha/simple_ha/simple_ha_leader_service.cpp
+    ha/simple_ha/simple_ha_standby_controller.cpp
     ha/snapshot/batch_oplog/codec.cpp
     ha/snapshot/batch_oplog/metadata.cpp
     ha/snapshot/batch_oplog/batch_oplog_snapshot_provider.cpp

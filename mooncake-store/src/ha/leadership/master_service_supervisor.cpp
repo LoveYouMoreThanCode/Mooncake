@@ -20,6 +20,7 @@
 #include "ha/kv/ha_kv_backend_factory.h"
 #include "ha/oplog/oplog_batch_storage.h"
 #include "ha/oplog/oplog_test_failpoint.h"
+#include "ha/simple_ha/simple_ha_leader_service.h"
 #include "ha/standby_controller.h"
 #include "k8s_lease_helper.h"
 #include "master_admin_service.h"
@@ -706,6 +707,13 @@ int RunSupervisorLoop(const HABackendSpec& spec,
 
         mooncake::WrappedMasterServiceConfig wrapped_config(
             config, leadership_session->view.view_version);
+        wrapped_config.enable_simple_ha = config.enable_simple_ha;
+        if (promotion_ctx->metadata_store) {
+            // The writer is constructed before RestoreFromBatchOpLogPromotion,
+            // so the promoted cursor must seed its initial durable prefix here.
+            wrapped_config.initial_durable_prefix =
+                promotion_ctx->applied_cursor;
+        }
         // The serving primary handles heartbeats/unmounts, so forward the
         // metadata cleanup config here like the non-HA path does.
         // Keep the gate alive until after the service is destroyed because the
@@ -717,12 +725,14 @@ int RunSupervisorLoop(const HABackendSpec& spec,
         // Runs the term's handlers once they are registered. It drains before
         // the service goes, so release the service through release_service.
         std::unique_ptr<RpcWorkerPool> worker_pool;
+        std::unique_ptr<SimpleHaLeaderService> simple_ha_service;
         // Stops the term's resources that exist, in the serving-exit order,
         // and keeps the service, the index and the gate alive through the
         // exit. Each step is a no-op on a resource not yet created or
         // already stopped.
         auto stop_term_resources =
             [&](std::unique_ptr<LeadershipMonitorHandle>& monitor) {
+                simple_ha_service.reset();
                 worker_pool.reset();
                 StopLeadershipMonitor(monitor);
                 wrapped_master_service->StopBatchOpLogWriter();
@@ -738,6 +748,7 @@ int RunSupervisorLoop(const HABackendSpec& spec,
                               term_lease);  // Does not return.
             }
             worker_pool.reset();
+            simple_ha_service.reset();
             wrapped_master_service.reset();
         };
         wrapped_master_service->SetBatchOpLogTerminalCallback(
@@ -785,6 +796,25 @@ int RunSupervisorLoop(const HABackendSpec& spec,
                 return -1;
             }
             continue;
+        }
+
+        if (config.enable_simple_ha) {
+            simple_ha_service = std::make_unique<SimpleHaLeaderService>(
+                wrapped_master_service->GetMasterService(),
+                static_cast<uint16_t>(config.simple_ha_rpc_port),
+                config.simple_ha_rpc_address,
+                config.simple_ha_snapshot_chunk_entries);
+            if (!simple_ha_service->Start()) {
+                LOG(ERROR) << "Failed to start Simple HA RPC service";
+                simple_ha_service.reset();
+                release_service();
+                DeactivateServingState(admin_server, label_reconciler);
+                return_to_standby(leadership_session->view);
+                LogLeadershipReleaseWarning("simple HA service start failure",
+                                            release_term("simple_ha_start"));
+                admin_server.SetObservedLeader(std::nullopt);
+                continue;
+            }
         }
 
         // Restore can outlast catch-up. Recheck the side-thread guard and
