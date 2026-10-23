@@ -3508,6 +3508,11 @@ tl::expected<void, ErrorCode> MasterService::PublishRestoredObjects(
             metadata.lease_ = RegisterGroupMember(
                 object.tenant_id, object.user_key, standby_meta.group_id);
         }
+        // A client may still be inside the read lease it received from the old
+        // primary. Grant a fresh lease to the restored object (or its shared
+        // group lease) so an eviction cannot race that in-flight read.
+        metadata.GrantReadLease(
+            std::chrono::milliseconds(default_kv_lease_ttl_));
         // Counted like a LOCAL_DISK replica added, since erasing the object
         // uncounts it.
         accessor.OnDiskReplicaAdded(metadata);

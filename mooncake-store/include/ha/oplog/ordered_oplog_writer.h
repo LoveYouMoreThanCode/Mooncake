@@ -107,6 +107,13 @@ class OrderedOpLogWriter {
     // use via(executor) to select the continuation's execution context.
     async_simple::Future<ErrorCode> AwaitDurable(uint64_t sequence);
 
+    // Block until every durable entry with sequence_id <= target_sequence_id
+    // has run its durable callback. Entries committed without a callback
+    // count as completed. Returns false on timeout, Stop(), or terminal
+    // writer failure, where the callback may never run.
+    bool WaitForCallbacksThrough(uint64_t target_sequence_id,
+                                 std::chrono::milliseconds timeout);
+
     bool IsAccepting() const;
     ErrorCode LastError() const;
     std::optional<OrderedOpLogWriterTerminalState> GetTerminalState() const;

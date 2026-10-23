@@ -2654,6 +2654,11 @@ class MasterService {
     ErrorCode InitializeBatchOpLogWriter(std::shared_ptr<HaKvBackend> backend,
                                          bool require_fenced_writer);
     ErrorCode InitializeSimpleHaWriter();
+    // Blocks until every durable-finalize callback through `sequence_id` has
+    // run, so a snapshot base taken at that prefix cannot miss a deferred map
+    // mutation (for example an erase that happens after the OpLog is durable).
+    bool WaitForSimpleHaCallbacks(uint64_t sequence_id,
+                                  std::chrono::milliseconds timeout);
     tl::expected<uint64_t, ErrorCode> AppendOpLogVisibleBeforeDurable(
         OpType type, const std::string& tenant_id, const std::string& key,
         const std::string& payload);

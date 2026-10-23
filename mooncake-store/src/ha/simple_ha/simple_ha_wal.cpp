@@ -147,4 +147,12 @@ ErrorCode MasterService::InitializeSimpleHaWriter() {
     return ErrorCode::OK;
 }
 
+bool MasterService::WaitForSimpleHaCallbacks(
+    uint64_t sequence_id, std::chrono::milliseconds timeout) {
+    if (!ordered_oplog_writer_) {
+        return true;
+    }
+    return ordered_oplog_writer_->WaitForCallbacksThrough(sequence_id, timeout);
+}
+
 }  // namespace mooncake

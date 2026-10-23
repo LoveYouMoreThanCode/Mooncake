@@ -157,13 +157,25 @@ std::vector<SimpleHaSegmentEntry> SimpleHaLeaderService::SnapshotSegments()
 
 SimpleHaBeginSnapshotResponse SimpleHaLeaderService::BeginSnapshot() {
     SimpleHaBeginSnapshotResponse response;
-    if (!wal_) {
+    if (!wal_ || !master_) {
         response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
         return response;
     }
 
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     const auto state = wal_->SnapshotState();
+    // A durable-finalize callback may still be running for an entry at or
+    // below the durable prefix. Wait for those callbacks so the scan cannot
+    // capture state the OpLog has already superseded (for example an erase
+    // that only lands in the live map after the record became durable).
+    constexpr auto kQuiesceTimeout = std::chrono::milliseconds(2000);
+    if (!master_->WaitForSimpleHaCallbacks(state.durable_prefix.last_seq,
+                                           kQuiesceTimeout)) {
+        LOG(WARNING) << "Simple HA snapshot base did not quiesce, base_seq="
+                     << state.durable_prefix.last_seq;
+        response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+        return response;
+    }
     SnapshotSession session;
     session.snapshot_id = std::to_string(state.durable_prefix.batch_id) + "-" +
                           state.incarnation;

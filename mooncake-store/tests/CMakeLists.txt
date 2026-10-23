@@ -541,6 +541,10 @@ target_link_libraries(shutdown_request_test PRIVATE glog::glog gtest gtest_main
 add_test(NAME shutdown_request_test COMMAND shutdown_request_test)
 add_ha_test(master_service_ha_test ha/master_service_ha_test.cpp)
 add_ha_core_test(simple_ha_wal_test ha/simple_ha/simple_ha_wal_test.cpp)
+add_ha_core_test(simple_ha_callback_barrier_test
+                 ha/simple_ha/simple_ha_callback_barrier_test.cpp)
+add_ha_core_test(simple_ha_restore_lease_test
+                 ha/simple_ha/simple_ha_restore_lease_test.cpp)
 
 foreach(
   target

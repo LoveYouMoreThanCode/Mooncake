@@ -53,6 +53,8 @@ struct OrderedOpLogWriter::Impl {
             return;
         }
         next_sequence_id = this->config.initial_durable_prefix.last_seq + 1;
+        callback_applied_through =
+            this->config.initial_durable_prefix.last_seq;
     }
 
     void PublishRuntime(bool activate = false) {
@@ -160,6 +162,7 @@ struct OrderedOpLogWriter::Impl {
             waiters.swap(durable_waiters);
         }
         cv.notify_all();
+        callback_cv.notify_all();
         CompleteWaiters(std::move(waiters), error);
         if (callback) {
             callback(*state);
@@ -176,6 +179,10 @@ struct OrderedOpLogWriter::Impl {
     bool running{false};
     bool stop_requested{false};
     bool callback_stop_requested{false};
+    // Highest sequence id whose durable callback has finished running.
+    // Advanced by the callback thread; read by snapshot barriers.
+    uint64_t callback_applied_through{0};
+    std::condition_variable callback_cv;
     ErrorCode last_error{ErrorCode::OK};
     uint64_t retry_count{0};
     uint64_t runtime_owner{0};
@@ -439,6 +446,17 @@ async_simple::Future<ErrorCode> OrderedOpLogWriter::AwaitDurable(
     return future;
 }
 
+bool OrderedOpLogWriter::WaitForCallbacksThrough(
+    uint64_t target_sequence_id, std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    impl_->callback_cv.wait_for(lock, timeout, [&] {
+        return impl_->callback_applied_through >= target_sequence_id ||
+               impl_->stop_requested || impl_->terminal_state.has_value() ||
+               !impl_->running;
+    });
+    return impl_->callback_applied_through >= target_sequence_id;
+}
+
 bool OrderedOpLogWriter::IsAccepting() const {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->accepting;
@@ -510,6 +528,13 @@ void OrderedOpLogWriter::Start() {
 #endif
                 callback_entry.callback(callback_entry.entry);
             }
+            {
+                std::lock_guard<std::mutex> lock(impl_->mutex);
+                impl_->callback_applied_through =
+                    std::max(impl_->callback_applied_through,
+                             callback_entry.entry.sequence_id);
+            }
+            impl_->callback_cv.notify_all();
         }
     });
     impl_->writer_thread = std::thread([this] {
@@ -699,6 +724,7 @@ void OrderedOpLogWriter::Stop() {
                            : ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS;
     }
     impl_->cv.notify_all();
+    impl_->callback_cv.notify_all();
     Impl::CompleteWaiters(std::move(waiters), waiter_error);
     if (!running) {
         return;
@@ -711,6 +737,7 @@ void OrderedOpLogWriter::Stop() {
         impl_->callback_stop_requested = true;
     }
     impl_->cv.notify_all();
+    impl_->callback_cv.notify_all();
     if (impl_->callback_thread.joinable()) {
         impl_->callback_thread.join();
     }

@@ -9,6 +9,7 @@
 
 #include "ha/oplog/oplog_batch_codec.h"
 #include "ha/simple_ha/simple_ha_leader_service.h"
+#include "ha_metric_manager.h"
 #include "metadata_store.h"
 
 namespace mooncake::ha {
@@ -611,6 +612,8 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
             if (!probe) {
                 LOG(WARNING) << "Simple HA empty promotion peer probe failed; "
                                 "starting empty";
+                HAMetricManager::instance()
+                    .inc_simple_ha_degraded_promotions();
             }
         } else {
             // A cold two-node cluster has no leader service yet. Refusing to
@@ -620,6 +623,7 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
             LOG(WARNING) << "Simple HA empty promotion cannot reach peer "
                          << peer_host_ << ":" << peer_port_
                          << "; starting empty";
+            HAMetricManager::instance().inc_simple_ha_degraded_promotions();
         }
     }
 
@@ -632,19 +636,48 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
         // Best-effort final catch-up. A crashed leader is unreachable and the
         // applied state is already the newest recoverable one; a live leader
         // lets us pull the remaining tail before exporting.
+        bool catch_up_failed = false;
         for (int attempt = 0; attempt < 4; ++attempt) {
             if (!EnsureConnected()) {
+                catch_up_failed = true;
                 break;
             }
             const ErrorCode error = PullOnce();
             if (error == ErrorCode::INCOMPLETE_OPLOG_CATCH_UP) {
                 return tl::make_unexpected(error);
             }
-            if (error != ErrorCode::OK ||
-                applied_seq_.load(std::memory_order_acquire) >=
-                    peer_durable_seq_.load(std::memory_order_acquire)) {
+            if (error != ErrorCode::OK) {
+                catch_up_failed = true;
                 break;
             }
+            if (applied_seq_.load(std::memory_order_acquire) >=
+                peer_durable_seq_.load(std::memory_order_acquire)) {
+                break;
+            }
+        }
+
+        const uint64_t applied_seq =
+            applied_seq_.load(std::memory_order_acquire);
+        const uint64_t peer_durable_seq =
+            peer_durable_seq_.load(std::memory_order_acquire);
+        const uint64_t lag = peer_durable_seq > applied_seq
+                                 ? peer_durable_seq - applied_seq
+                                 : 0;
+        if (catch_up_failed || lag != 0) {
+            // The previous primary is gone or unreachable, so the missing
+            // suffix cannot be recovered. Serving the newest recoverable state
+            // beats failing closed, but operators must be able to see that this
+            // promotion may have lost more than the steady-state pull window.
+            LOG(WARNING)
+                << "Simple HA promotion without a completed WAL catch-up: "
+                << "applied_seq=" << applied_seq
+                << ", applied_batch="
+                << applied_batch_id_.load(std::memory_order_acquire)
+                << ", last_known_peer_durable_seq=" << peer_durable_seq
+                << ", lag=" << lag
+                << ", peer_unreachable=" << (catch_up_failed ? 1 : 0)
+                << "; the unreplicated suffix is unrecoverable";
+            HAMetricManager::instance().inc_simple_ha_degraded_promotions();
         }
     }
 

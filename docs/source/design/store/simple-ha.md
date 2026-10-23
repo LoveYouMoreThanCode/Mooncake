@@ -38,7 +38,7 @@ orphan: true
 
 pull 响应带 first / last / incarnation；from < first、incarnation 变了、或 entries 索引不连续 → 作废当前快照会话，在进程内 stage-and-swap 全量重装，不跳过去继续追。重装期间没有备，主此时再挂就是全丢；失败按 backoff 重试。与早期设计不同：当前实现不退出进程，也没有 `WAL_OVERWRITTEN` 退出码。快照本身不需要 pin；不做 WAL pin，S+1 被覆盖就重装。ring 要覆盖整个扫描时长，否则会反复重装。
 
-**全量扫描：** `BeginSnapshot` 返回 `snapshot_id` / `incarnation` / `base_batch_id` / `base_seq` 和 segment 列表；按 tenant（排序）→ shard（共 1024 片）逐个推进，每次 `SnapshotChunk` 带 `snapshot_id` / `tenant_index` / `shard_index` / `offset`，主侧在 shard 读锁内把该分片序列化成 entries 后按 offset 分页返回，响应带 `next_tenant_index` / `next_shard_index` / `next_offset` / `done`。只序列化 completed replica；扫描期间的新增、删除、修改都由 base+1 之后的 WAL 修正，批次之间不做快照隔离。分片在 shard 锁内一次取全，分页只发生在已固定的 staged 数据上，所以 offset 分页不会漏 key。扫描期间 base+1 被 ring 覆盖会作废会话（`INCOMPLETE_OPLOG_CATCH_UP`），备重装。会话只有一个消费者；游标不匹配（比如响应丢失后重试）会让会话作废并返回错误，备重新 `BeginSnapshot`。扫完、装好再回放 WAL；不要边扫边回放，否则旧 chunk 可能覆盖新 WAL 值。
+**全量扫描：** `BeginSnapshot` 返回 `snapshot_id` / `incarnation` / `base_batch_id` / `base_seq` 和 segment 列表；取到 base 后先等待 writer 的 durable-finalize 回调执行到 base（静默前缀）再开始扫描——否则延迟擦除（例如 discard expired processing replica）可能被扫进快照，而重放从 base+1 开始不会补删。扫描按 tenant（排序）→ shard（共 1024 片）逐个推进，每次 `SnapshotChunk` 带 `snapshot_id` / `tenant_index` / `shard_index` / `offset`，主侧在 shard 读锁内把该分片序列化成 entries 后按 offset 分页返回，响应带 `next_tenant_index` / `next_shard_index` / `next_offset` / `done`。只序列化 completed replica；扫描期间的新增、删除、修改都由 base+1 之后的 WAL 修正，批次之间不做快照隔离。分片在 shard 锁内一次取全，分页只发生在已固定的 staged 数据上，所以 offset 分页不会漏 key。扫描期间 base+1 被 ring 覆盖会作废会话（`INCOMPLETE_OPLOG_CATCH_UP`），备重装。会话只有一个消费者；游标不匹配（比如响应丢失后重试）会让会话作废并返回错误，备重新 `BeginSnapshot`。扫完、装好再回放 WAL；不要边扫边回放，否则旧 chunk 可能覆盖新 WAL 值。
 
 ## 04 升主
 
@@ -47,6 +47,10 @@ pull 响应带 first / last / incarnation；from < first、incarnation 变了、
 ![升主决策流程：先关 ready；state 有效则服务；空则确认对端；对端有数据就 Resign 让位并同步](../../image/simple-ha-promotion.svg)
 
 *空节点不持有 leadership；只有 leader && ready 才接流量。空节点让位后等对端升主，再从新主同步。分区恢复：老主失去 lease 立即 ready=false；**实现现状：**term 结束即释放本地状态，重连后从新主全量重装（设计目标是保留状态直到看到更高 epoch）；若此时对端不可达，重新当选会按空启动——见 07 已知限制。*
+
+升主 restore 时，新主会给每个恢复对象统一 grant 一个 `default_kv_lease_ttl` 的读租约（组对象使用共享的组租约）。这覆盖客户端在旧主上持有的剩余租约窗口，避免新主的 eviction 与客户端仍在进行的直接读竞争。
+
+扫描完成但 WAL 尚未追平时老主故障，备会以扫描得到的混合状态升主（可用性优先）。该路径会打印 WARN（`applied_seq` / `last_known_peer_durable_seq` / `lag` / `peer_unreachable`）并累加 `ha_simple_ha_degraded_promotions_total`；缺失的尾部在此架构下不可恢复。
 
 ## 05 故障切换预算
 
@@ -97,7 +101,7 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 | # | 不变量 |
 | --- | --- |
 | 01 | WAL 只记绝对 post-image（SET/DEL），可重复应用。 |
-| 02 | 快照带 base_index，从 base+1 追；base 在 `BeginSnapshot` 时随 WAL 前缀取得，副本随后分批读取。 |
+| 02 | 快照带 base_index，从 base+1 追；base 在 `BeginSnapshot` 时随 WAL 前缀取得，并等待 durable-finalize 回调执行到 base（静默前缀）后才开始扫描。 |
 | 03 | 备发现 gap 不跳过去继续追：作废快照会话，在进程内 stage-and-swap 全量重装，再从 base+1 追；老主作废重装同样用 stage-and-swap。 |
 | 04 | incarnation 变了 = 对端换了一个 WAL 实例（进程重启或重新升主都会换），不能盲信索引连续。 |
 | 05 | ring 窗口要覆盖 1s pull 间隔、备短暂停机与全量扫描耗时；按峰值写速率/字节数定容，不能只按条数。 |
@@ -106,6 +110,8 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 | 08 | 空 = 未初始化（applied=0 / 无 lineage），不是 map 没有 key。 |
 | 09 | 失去 lease 立即停服；term 结束即释放本地内存状态，重新以空备加入并从新主全量重装。设计目标是保留本地状态直到看到更高 epoch，当前实现未做跨任期保留（见 07）。 |
 | 10 | 全量扫描按 tenant / shard 分批（每片在 shard 读锁内取全）；批次间不做快照隔离；先扫完再回放 base+1 的 WAL。 |
+| 11 | 升主 restore 时为每个恢复对象 grant 一个 `default_kv_lease_ttl` 的读租约（组对象 grant 组租约），覆盖客户端在旧主上持有的剩余租约窗口。 |
+| 12 | 全量同步期间允许以混合状态升主（可用性优先），但必须记录 degraded 指标并告警；不承诺跨 key 一致性。 |
 
 ## 07 故障与代价
 
@@ -115,6 +121,7 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 | --- | --- | --- |
 | 主进程崩溃 | 备升主 | 丢未复制的尾巴（正常 ≤1s） |
 | 备落后被 ring 覆盖 | 备进程内重装 → 重新加入全量快照 | 不丢；备短暂不可用 |
+| 备在全量同步刚完成、WAL 未追平时升主 | 以混合状态服务；记录 degraded 指标并告警 | 丢各 key 在扫描后未复制的写，窗口可达扫描时长；无跨 key 一致性 |
 | 主重启且空 | 让位给备，自己同步 | 丢未复制的尾巴（正常 ≤1s） |
 | 两边都重启且空 | tie-break 空启动 | 全丢（内存，不做本地持久化） |
 | 全量扫描慢于 ring | 扩 ring / 重建会话退避重试 | 不丢，可能反复重装 |
@@ -124,6 +131,8 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 | Simple HA + weight 管理 | weight mutations 关闭 | weight metadata 不复制、不进快照 |
 
 **丢窗口：** 纯异步，已 ack 的写可能丢最后一段未复制的尾巴；正常 ≤ 一个 pull 间隔（约 1s）。脑裂期间老主 ack 的写会在重连重装时被丢弃。ring 覆盖不会丢历史，只会触发重同步。
+
+降级升主：全量同步刚完成、WAL 尚未追平时老主故障，备以扫描得到的混合状态服务。此时每个 key 都是某个合法 post-image，但不存在全局一致的 cursor；丢失范围是各 key 在扫描之后、崩溃之前未复制的写。该路径输出 WARN 并累加 `ha_simple_ha_degraded_promotions_total`，不承诺跨 key 一致性。
 
 按本页参数：最坏感知 ≈4.3s，服务 ≈5.8s；crash 空窗 ≈3–4s，分区空窗 ≈0.8–1s。
 
@@ -136,7 +145,7 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 3. **pull / ring 容量（低风险）** —— 评估 pull 速度跟不上写入增长的可能性不大；ring 仍需覆盖全量扫描耗时。备发现 gap 在进程内重装，失败按 backoff 重试，需配告警。
 4. **全量扫描与重试** —— 不做 pin；按 tenant / shard 分批，批次间不做快照隔离；ring 要覆盖整个扫描时长；失败 / 覆盖后重建会话并退避重试；chunk 校验和与格式版本兼容尚未做（当前依赖 RPC 传输与 struct_pack 反序列化）。
 5. **升主暂停时间（低风险）** —— 升主时 `StopLoop` 会 join 正在进行的 pull / snapshot chunk RPC（超时 5s / 10s），对端卡住时可能突破 P=0.5s 的预算；可考虑缩短超时或可中断的 RPC。
-6. **快照基准与 apply-after-durable 的窗口（低风险）** —— 少数 durable-finalize 回调（例如 discard expired processing replica）在 WAL 提交后才修改 live map。若快照扫描恰好在这个毫秒级窗口内读到旧值，base+1 的 WAL 不会重放该修改，备会多保留一个已被主丢弃的副本；属 best-effort 范畴，若要做严可在 `BeginSnapshot` 前等待 writer 的 callback 队列排空。
-7. **客户端 / LB 切流（redirect）** —— 备不支持读，读写都走主。LB 按 ready 路由；设计目标是非主时请求返回 redirect，target 带当前 leader + epoch；leader 未 ready 返回 not-ready / retry-after。当前 master 不内联返回 redirect，依赖 LB / 客户端重试；具体错误码 / 字段待集成系统确定。
+6. **客户端 / LB 切流（redirect）** —— 备不支持读，读写都走主。LB 按 ready 路由；设计目标是非主时请求返回 redirect，target 带当前 leader + epoch；leader 未 ready 返回 not-ready / retry-after。当前 master 不内联返回 redirect，依赖 LB / 客户端重试；具体错误码 / 字段待集成系统确定。
+7. **全量 resync 期间的降级升主（已接受）** —— 扫描完成但 WAL 未追平老主就故障时，备以扫描得到的混合状态升主：每个 key 是某个合法 post-image，但不存在全局一致的 cursor。选择可用性优先——该架构下 fail-close 没有恢复路径，因为老主 term 结束也会释放状态，不会带着缺失尾部回来。已输出 WARN（applied / peer_durable / lag / peer_unreachable）并累加 `ha_simple_ha_degraded_promotions_total`；若上层依赖跨 key 同版本，需要自行做版本校验或改用 batch OpLog 路径。
 
 *2026-10 · 已按当前实现校准，遗留项待续*
