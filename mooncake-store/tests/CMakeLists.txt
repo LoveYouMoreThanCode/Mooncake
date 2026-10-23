@@ -37,6 +37,26 @@ function(add_ha_test name)
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
+# Core HA logic that does not need the Transfer Engine. Links the master-only
+# static library so these tests can also be built with WITH_TE=OFF.
+function(add_ha_core_test name)
+  add_executable(${name} ${ARGN})
+  target_include_directories(${name} PRIVATE ${MOONCAKE_STORE_TESTS_SOURCE_DIR})
+  target_link_libraries(
+    ${name}
+    PRIVATE mooncake_store_master
+            cachelib_memory_allocator
+            ${ETCD_WRAPPER_LIB}
+            glog::glog
+            gflags::gflags
+            asio_shared
+            yalantinglibs::yalantinglibs
+            gtest
+            gtest_main
+            pthread)
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
 add_store_test(buffer_allocator_test buffer_allocator_test.cpp)
 add_store_test(weight_management_contract_test
                weight_management_contract_test.cpp)
@@ -520,6 +540,7 @@ target_link_libraries(shutdown_request_test PRIVATE glog::glog gtest gtest_main
                                                     pthread)
 add_test(NAME shutdown_request_test COMMAND shutdown_request_test)
 add_ha_test(master_service_ha_test ha/master_service_ha_test.cpp)
+add_ha_core_test(simple_ha_wal_test ha/simple_ha/simple_ha_wal_test.cpp)
 
 foreach(
   target
