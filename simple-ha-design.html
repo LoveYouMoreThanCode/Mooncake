@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Simple HA 复制设计</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Serif:wght@500;600&amp;display=swap">
+<style>
+  :root {
+    --bg: #f3f5f3;
+    --surface: #fbfcfa;
+    --surface-2: #e9eeeb;
+    --ink: #1b2320;
+    --muted: #60706a;
+    --line: #d4dcd7;
+    --line-strong: #b7c4be;
+    --accent: #0d6b5f;
+    --accent-soft: #dceee9;
+    --warn: #9a5a12;
+    --warn-soft: #f5e8d8;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+    --serif: "IBM Plex Serif", Georgia, "Songti SC", serif;
+    --max: 1000px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101614;
+      --surface: #161f1c;
+      --surface-2: #1d2824;
+      --ink: #e3ebe7;
+      --muted: #93a39c;
+      --line: #2a3833;
+      --line-strong: #3b4c45;
+      --accent: #5fc9ba;
+      --accent-soft: #17332e;
+      --warn: #e0a15f;
+      --warn-soft: #33261a;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101614;
+    --surface: #161f1c;
+    --surface-2: #1d2824;
+    --ink: #e3ebe7;
+    --muted: #93a39c;
+    --line: #2a3833;
+    --line-strong: #3b4c45;
+    --accent: #5fc9ba;
+    --accent-soft: #17332e;
+    --warn: #e0a15f;
+    --warn-soft: #33261a;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.55;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0 56px;
+    overflow-wrap: break-word;
+  }
+  .wrap { max-width: var(--max); margin: 0 auto; }
+  .masthead {
+    padding: 30px 0 26px;
+    border-top: 3px solid var(--accent);
+    border-bottom: 1px solid var(--line-strong);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  h1 {
+    margin: 0;
+    font-family: var(--serif);
+    font-size: clamp(30px, 5vw, 46px);
+    font-weight: 600;
+    line-height: 1.08;
+    letter-spacing: -.02em;
+    text-wrap: balance;
+  }
+  .lede {
+    margin: 0;
+    max-width: 64ch;
+    color: var(--muted);
+    font-size: 15.5px;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px 20px;
+    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .meta span::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: 1px;
+  }
+  .meta span:last-child::before { background: var(--warn); }
+  .section { padding: 34px 0 6px; }
+  .section + .section { border-top: 1px solid var(--line); }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 5px;
+  }
+  .index {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    color: var(--accent);
+  }
+  h2 {
+    margin: 0;
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    text-wrap: balance;
+  }
+  .section-note {
+    margin: 0 0 10px;
+    max-width: 72ch;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .plate {
+    margin-top: 10px;
+    padding: 16px 18px 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  .diagram { overflow-x: auto; overscroll-behavior-x: contain; }
+  .diagram svg { display: block; width: 100%; min-width: 760px; height: auto; }
+  .d-box { fill: var(--surface); stroke: var(--line-strong); }
+  .d-box-muted { fill: var(--surface-2); stroke: var(--line); }
+  .d-box-accent { fill: var(--accent-soft); stroke: var(--accent); }
+  .d-box-warn { fill: var(--warn-soft); stroke: var(--warn); }
+  .d-text { fill: var(--ink); font-family: var(--mono); }
+  .d-label { fill: var(--muted); font-family: var(--mono); }
+  .d-accent-text { fill: var(--accent); font-family: var(--mono); }
+  .d-warn-text { fill: var(--warn); font-family: var(--mono); }
+  .d-line { stroke: var(--line-strong); fill: none; }
+  .d-muted-line { stroke: var(--muted); fill: none; }
+  .d-accent-line { stroke: var(--accent); fill: none; }
+  .d-warn-line { stroke: var(--warn); fill: none; }
+  .d-marker-muted { fill: var(--muted); }
+  .d-marker-accent { fill: var(--accent); }
+  .d-marker-warn { fill: var(--warn); }
+  .mermaid {
+    margin: 0;
+    overflow-x: auto;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .mermaid svg { max-width: 100%; height: auto; }
+  figcaption {
+    margin-top: 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--muted);
+  }
+  .state-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .state-card {
+    flex: 1 1 160px;
+    min-width: 0;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  .state-key {
+    display: block;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+  }
+  .state-desc {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .state-eq {
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .state-result {
+    flex: 1 1 220px;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    padding: 12px 14px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .state-note {
+    margin-top: 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .invariants {
+    list-style: none;
+    margin: 16px 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 32px;
+  }
+  .invariants li {
+    display: flex;
+    gap: 12px;
+    min-width: 0;
+    padding: 11px 0;
+    border-top: 1px solid var(--line);
+  }
+  .invariants .num {
+    flex: none;
+    padding-top: 2px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+  }
+  .invariants p { margin: 0; font-size: 14px; line-height: 1.5; }
+  .config {
+    margin: 14px 0 0;
+    padding: 14px 16px;
+    overflow-x: auto;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+  }
+  .reasons {
+    margin: 14px 0 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .reasons strong { color: var(--ink); font-weight: 500; }
+  .table-wrap {
+    margin-top: 14px;
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  table {
+    width: 100%;
+    min-width: 620px;
+    border-collapse: collapse;
+    font-size: 13.5px;
+  }
+  th, td {
+    padding: 11px 14px;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--line);
+  }
+  th {
+    background: var(--surface-2);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { font-weight: 500; }
+  td:nth-child(3) { color: var(--muted); }
+  .contract {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: var(--surface-2);
+    border-left: 3px solid var(--accent);
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .contract strong { color: var(--ink); font-weight: 500; }
+  .open {
+    margin-top: 36px;
+    padding: 20px 20px 10px;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-left: 4px solid var(--warn);
+  }
+  .open h2 { font-size: 20px; }
+  .tag {
+    display: inline-block;
+    padding: 3px 7px;
+    border: 1px solid var(--warn);
+    color: var(--warn);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .open ol {
+    margin: 14px 0 0;
+    padding-left: 20px;
+    display: grid;
+    gap: 12px;
+  }
+  .open li { padding-left: 2px; }
+  .open strong { font-weight: 500; }
+  .open p { margin: 3px 0 0; color: var(--muted); font-size: 13.5px; }
+  .open code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    padding: 0 0.3em;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--ink);
+  }
+  .footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 38px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  @media (max-width: 700px) {
+    h1 { font-size: 32px; }
+    .plate { padding: 12px 10px 8px; }
+    .state-strip { flex-direction: column; }
+    .state-eq { display: none; }
+    .state-result { flex: 1 1 auto; }
+    .invariants { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="masthead">
+    <div class="eyebrow">Design note · 2026-10</div>
+    <h1>Simple HA 复制设计</h1>
+    <p class="lede">双节点元数据 KV：etcd 选主，内存 WAL 环形缓冲，备从主拉取。目标是最佳努力地少丢记录，而不是完备的一致性状态机。</p>
+    <div class="meta">
+      <span>最佳努力</span>
+      <span>两节点均为候选</span>
+      <span>失去 lease 即停服</span>
+      <span>lease 4s</span>
+      <span>备 1s pull</span>
+      <span>全内存</span>
+    </div>
+  </header>
+
+  <section class="section">
+    <div class="section-head"><span class="index">01</span><h2>架构</h2></div>
+    <p class="section-note">etcd 只管选主（leader key + lease）；数据在两边内存里。备从主拉快照和 WAL。独立的 presence key 尚未实现，见遗留问题。</p>
+    <figure>
+      <div class="plate">
+        <div class="diagram">
+          <svg viewBox="0 0 900 340" role="img" aria-label="etcd 下方两个节点，主节点持有 KV 与 WAL，备节点从主拉取快照和 WAL">
+            <defs>
+              <marker id="d1-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-muted"/></marker>
+              <marker id="d1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-accent"/></marker>
+            </defs>
+            <rect x="320" y="18" width="260" height="66" rx="8" class="d-box-muted"/>
+            <text x="450" y="45" text-anchor="middle" class="d-text" font-size="15" font-weight="600">etcd</text>
+            <text x="450" y="65" text-anchor="middle" class="d-label" font-size="11">leader key · lease</text>
+            <rect x="100" y="180" width="280" height="110" rx="10" class="d-box"/>
+            <text x="120" y="207" class="d-text" font-size="13" font-weight="600">NODE A · LEADER</text>
+            <text x="120" y="228" class="d-label" font-size="11">map + WAL ring</text>
+            <rect x="120" y="244" width="112" height="28" rx="4" class="d-box-muted"/>
+            <text x="176" y="262" text-anchor="middle" class="d-label" font-size="10">KV map</text>
+            <rect x="244" y="244" width="116" height="28" rx="4" class="d-box-muted"/>
+            <text x="302" y="262" text-anchor="middle" class="d-label" font-size="10">WAL ring</text>
+            <rect x="520" y="180" width="280" height="110" rx="10" class="d-box"/>
+            <text x="540" y="207" class="d-text" font-size="13" font-weight="600">NODE B · STANDBY</text>
+            <text x="540" y="228" class="d-label" font-size="11">map (replica)</text>
+            <rect x="540" y="244" width="140" height="28" rx="4" class="d-box-muted"/>
+            <text x="610" y="262" text-anchor="middle" class="d-label" font-size="10">KV map</text>
+            <path d="M240 180 V130 H380 V84" class="d-muted-line" stroke-width="1.2" marker-end="url(#d1-m)"/>
+            <path d="M660 180 V130 H520 V84" class="d-muted-line" stroke-width="1.2" marker-end="url(#d1-m)"/>
+            <text x="310" y="121" text-anchor="middle" class="d-label" font-size="10">campaign / keepalive</text>
+            <text x="590" y="121" text-anchor="middle" class="d-label" font-size="10">campaign / keepalive</text>
+            <path d="M520 234 H380" class="d-accent-line" stroke-width="1.6" marker-end="url(#d1-a)"/>
+            <text x="450" y="224" text-anchor="middle" class="d-accent-text" font-size="10">pull snapshot / WAL</text>
+            
+            <text x="18" y="228" class="d-label" font-size="10">clients</text>
+            <path d="M62 244 H100" class="d-muted-line" stroke-width="1.2" marker-end="url(#d1-m)"/>
+            <text x="80" y="236" text-anchor="middle" class="d-label" font-size="9">R/W</text>
+          </svg>
+        </div>
+      </div>
+      <figcaption>同一套代码，角色由 election 决定；快照由当前 leader 提供。</figcaption>
+    </figure>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><span class="index">02</span><h2>写路径</h2></div>
+    <p class="section-note">纯异步：主 apply + 追加 WAL 后立即 ack；备每 1s 拉一次，不参与写路径，也不对外提供读。落后 ≤1s 可接受。</p>
+    <figure>
+      <div class="plate">
+        <div class="diagram">
+          <svg viewBox="0 0 900 340" role="img" aria-label="写请求经过 leader 与 ready 门禁、分配索引、应用 map、追加 WAL，再返回客户端；备定时拉取并应用">
+            <defs>
+              <marker id="d2-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-muted"/></marker>
+              <marker id="d2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-accent"/></marker>
+              <marker id="d2-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-warn"/></marker>
+            </defs>
+            <rect x="20" y="40" width="90" height="44" rx="6" class="d-box"/>
+            <text x="65" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">client write</text>
+            <rect x="140" y="40" width="150" height="44" rx="6" class="d-box-accent"/>
+            <text x="215" y="62" text-anchor="middle" class="d-accent-text" font-size="11" dominant-baseline="middle">leader &amp;&amp; ready?</text>
+            <rect x="320" y="40" width="110" height="44" rx="6" class="d-box"/>
+            <text x="375" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">assign index</text>
+            <rect x="460" y="40" width="100" height="44" rx="6" class="d-box"/>
+            <text x="510" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">apply map</text>
+            <rect x="590" y="40" width="120" height="44" rx="6" class="d-box"/>
+            <text x="650" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">append WAL</text>
+            <rect x="740" y="40" width="130" height="44" rx="6" class="d-box"/>
+            <text x="805" y="62" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">ack client</text>
+            <path d="M110 62 H140" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+            <path d="M290 62 H320" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+            <path d="M430 62 H460" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+            <path d="M560 62 H590" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+            <path d="M710 62 H740" class="d-muted-line" stroke-width="1.2" marker-end="url(#d2-m)"/>
+            <path d="M215 84 V140" class="d-warn-line" stroke-width="1.2" marker-end="url(#d2-w)"/>
+            <text x="224" y="112" class="d-label" font-size="10">no</text>
+            <rect x="140" y="140" width="150" height="40" rx="6" class="d-box-warn"/>
+            <text x="215" y="160" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">not-primary / LB 切流</text>
+            <path d="M650 84 V170" class="d-accent-line" stroke-width="1.3" marker-end="url(#d2-a)"/>
+            <text x="660" y="130" class="d-label" font-size="10">replicate</text>
+            <rect x="590" y="170" width="140" height="44" rx="6" class="d-box-accent"/>
+            <text x="660" y="192" text-anchor="middle" class="d-accent-text" font-size="11" dominant-baseline="middle">standby pull</text>
+            <path d="M660 214 V240" class="d-accent-line" stroke-width="1.3" marker-end="url(#d2-a)"/>
+            <rect x="590" y="240" width="140" height="48" rx="6" class="d-box-accent"/>
+            <text x="660" y="257" text-anchor="middle" class="d-accent-text" font-size="11">apply in order</text>
+            <text x="660" y="274" text-anchor="middle" class="d-label" font-size="10">applied = S</text>
+            
+          </svg>
+        </div>
+      </div>
+      <figcaption>备的 pull 是 out-of-band 的；主不等待备，也不做 group commit。ack 后的写仍可能丢最后一段未复制的尾巴。</figcaption>
+    </figure>
+    <p class="state-note">备不对外提供读；读写都走主。当前实现不内联返回 redirect：非 leader 的节点由集成系统的 LB / 客户端重试切到新主（按 ready 路由），leader 但未 ready 时同样由客户端重试。设计目标是非主返回 redirect（target 带当前 leader + epoch）、leader 未 ready 返回 not-ready / retry-after；具体错误码与字段待集成系统确定。</p>
+  </section>
+  <section class="section">
+    <div class="section-head"><span class="index">03</span><h2>追平</h2></div>
+    <p class="section-note">追得上就走 WAL；发现被覆盖不跳过去继续追，而是在进程内 stage-and-swap 重装：握手 + 全量快照 + 从 base+1 追。</p>
+    <figure>
+      <div class="plate">
+        <div class="diagram">
+          <svg viewBox="0 0 900 400" role="img" aria-label="WAL 环形缓冲区：first 101、last 200；applied 150 追得上，applied 95 出现 gap 需要全量快照">
+            <defs>
+              <marker id="d3-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-muted"/></marker>
+              <marker id="d3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-accent"/></marker>
+              <marker id="d3-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-warn"/></marker>
+            </defs>
+            <text x="24" y="30" class="d-label" font-size="11">WAL ring（内存）</text>
+            <rect x="24" y="44" width="640" height="46" rx="6" class="d-box"/>
+            <line x1="104" y1="44" x2="104" y2="90" class="d-line" stroke-width="1"/>
+            <line x1="184" y1="44" x2="184" y2="90" class="d-line" stroke-width="1"/>
+            <line x1="264" y1="44" x2="264" y2="90" class="d-line" stroke-width="1"/>
+            <line x1="344" y1="44" x2="344" y2="90" class="d-line" stroke-width="1"/>
+            <line x1="424" y1="44" x2="424" y2="90" class="d-line" stroke-width="1"/>
+            <line x1="504" y1="44" x2="504" y2="90" class="d-line" stroke-width="1"/>
+            <line x1="584" y1="44" x2="584" y2="90" class="d-line" stroke-width="1"/>
+            <rect x="584" y="44" width="80" height="46" class="d-box-muted" stroke-dasharray="4 4"/>
+            <text x="64" y="72" text-anchor="middle" class="d-text" font-size="11">101</text>
+            <text x="144" y="72" text-anchor="middle" class="d-text" font-size="11">102</text>
+            <text x="224" y="72" text-anchor="middle" class="d-text" font-size="11">103</text>
+            <text x="304" y="72" text-anchor="middle" class="d-label" font-size="11">…</text>
+            <text x="384" y="72" text-anchor="middle" class="d-text" font-size="11">198</text>
+            <text x="464" y="72" text-anchor="middle" class="d-text" font-size="11">199</text>
+            <text x="544" y="72" text-anchor="middle" class="d-text" font-size="11">200</text>
+            <text x="624" y="72" text-anchor="middle" class="d-label" font-size="10">free</text>
+            <text x="24" y="114" class="d-label" font-size="10">first = 101</text>
+            <text x="544" y="114" text-anchor="middle" class="d-label" font-size="10">last = 200</text>
+            <text x="624" y="114" text-anchor="middle" class="d-label" font-size="9">可覆盖</text>
+            <rect x="24" y="150" width="140" height="36" rx="6" class="d-box-accent"/>
+            <text x="94" y="168" text-anchor="middle" class="d-accent-text" font-size="11" dominant-baseline="middle">applied = 150</text>
+            <path d="M164 168 H220" class="d-accent-line" stroke-width="1.3" marker-end="url(#d3-a)"/>
+            <rect x="220" y="150" width="180" height="36" rx="6" class="d-box"/>
+            <text x="310" y="168" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">拉 151 … 200</text>
+            <text x="420" y="168" class="d-accent-text" font-size="11">追得上</text>
+            <rect x="24" y="210" width="140" height="36" rx="6" class="d-box-warn"/>
+            <text x="94" y="228" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">applied = 95</text>
+            <path d="M164 228 H220" class="d-warn-line" stroke-width="1.3" marker-end="url(#d3-w)"/>
+            <rect x="220" y="210" width="180" height="36" rx="6" class="d-box"/>
+            <text x="310" y="228" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">95 + 1 &lt; 101</text>
+            <path d="M400 228 H460" class="d-warn-line" stroke-width="1.3" marker-end="url(#d3-w)"/>
+            <rect x="460" y="210" width="200" height="36" rx="6" class="d-box-warn"/>
+            <text x="560" y="228" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">GAP → 进程内重装</text>
+            <text x="680" y="228" class="d-warn-text" font-size="11">追不上</text>
+            <rect x="24" y="290" width="140" height="36" rx="6" class="d-box-accent"/>
+            <text x="94" y="308" text-anchor="middle" class="d-accent-text" font-size="11" dominant-baseline="middle">全量扫描 at S</text>
+            <path d="M164 308 H220" class="d-accent-line" stroke-width="1.3" marker-end="url(#d3-a)"/>
+            <rect x="220" y="290" width="200" height="36" rx="6" class="d-box"/>
+            <text x="320" y="308" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">扫完装好 → S+1 追</text>
+            <path d="M420 308 H480" class="d-accent-line" stroke-width="1.3" marker-end="url(#d3-a)"/>
+            <rect x="480" y="290" width="180" height="36" rx="6" class="d-box-warn"/>
+            <text x="570" y="308" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">S+1 被覆盖 → 重装</text>
+            <text x="680" y="308" class="d-warn-text" font-size="11">不 pin，重试</text>
+            <text x="24" y="340" class="d-label" font-size="10">新备加入：握手拿 base_index=S → 游标扫描 → 从 S+1 追</text>
+            <line x1="24" y1="352" x2="664" y2="352" class="d-line" stroke-width="1"/>
+            <text x="24" y="376" class="d-label" font-size="10">约束：ring 窗口 ≥ 扫描时长 × 峰值写速率</text>
+          </svg>
+        </div>
+      </div>
+      <figcaption>快照要带 base_index（BeginSnapshot 时随 WAL 前缀一起取得）；副本随后按 shard 读锁分批读取，扫描期间超过 base 的变化由 base+1 的 WAL 修正。装好之前不要对外服务。备发现 from &lt; first 或 incarnation 变化，丢弃当前快照会话并在进程内 stage-and-swap 重装，不跳过去继续追。</figcaption>
+    </figure>
+    <p class="state-note">pull 响应带 first / last / incarnation；from &lt; first、incarnation 变了、或 entries 索引不连续 → 作废当前快照会话，在进程内 stage-and-swap 全量重装，不跳过去继续追。重装期间没有备，主此时再挂就是全丢；失败按 backoff 重试。与早期设计不同：当前实现不退出进程，也没有 WAL_OVERWRITTEN 退出码。快照本身不需要 pin；不做 WAL pin，S+1 被覆盖就重装。ring 要覆盖整个扫描时长，否则会反复重装。</p>
+    <p class="contract"><strong>全量扫描：</strong>BeginSnapshot 返回 snapshot_id / incarnation / base_batch_id / base_seq 和 segment 列表；按 tenant（排序）→ shard（共 1024 片）逐个推进，每次 SnapshotChunk 带 snapshot_id / tenant_index / shard_index / offset，主侧在 shard 读锁内把该分片序列化成 entries 后按 offset 分页返回，响应带 next_tenant_index / next_shard_index / next_offset / done。只序列化 completed replica；扫描期间的新增、删除、修改都由 base+1 之后的 WAL 修正，批次之间不做快照隔离。分片在 shard 锁内一次取全，分页只发生在已固定的 staged 数据上，所以 offset 分页不会漏 key。扫描期间 base+1 被 ring 覆盖会作废会话（INCOMPLETE_OPLOG_CATCH_UP），备重装。会话只有一个消费者；游标不匹配（比如响应丢失后重试）会让会话作废并返回错误，备重新 BeginSnapshot。扫完、装好再回放 WAL；不要边扫边回放，否则旧 chunk 可能覆盖新 WAL 值。</p>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><span class="index">04</span><h2>升主</h2></div>
+    <p class="section-note">空节点赢了也不当主：探测到对端有数据就 Resign，让位后自己同步；对端不可达时当前实现按空启动并告警（未查询 presence，见 §07）。</p>
+    <figure>
+      <div class="plate">
+        <div class="diagram">
+          <svg viewBox="0 0 900 560" role="img" aria-label="升主决策流程：先关 ready；state 有效则服务；空则确认对端；对端有数据就 Resign 让位并同步">
+            <defs>
+              <marker id="d4-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-muted"/></marker>
+              <marker id="d4-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-accent"/></marker>
+              <marker id="d4-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-warn"/></marker>
+            </defs>
+            <rect x="60" y="20" width="200" height="42" rx="6" class="d-box"/>
+            <text x="160" y="41" text-anchor="middle" class="d-text" font-size="12" dominant-baseline="middle">campaign won</text>
+            <path d="M160 62 V92" class="d-muted-line" stroke-width="1.2" marker-end="url(#d4-m)"/>
+            <rect x="60" y="92" width="200" height="42" rx="6" class="d-box"/>
+            <text x="160" y="113" text-anchor="middle" class="d-text" font-size="12" dominant-baseline="middle">ready = false</text>
+            <path d="M160 134 V164" class="d-muted-line" stroke-width="1.2" marker-end="url(#d4-m)"/>
+            <rect x="50" y="164" width="220" height="54" rx="6" class="d-box-accent"/>
+            <text x="160" y="191" text-anchor="middle" class="d-accent-text" font-size="12" dominant-baseline="middle">自己 state valid?</text>
+            <path d="M270 191 H370" class="d-accent-line" stroke-width="1.3" marker-end="url(#d4-a)"/>
+            <text x="320" y="182" text-anchor="middle" class="d-label" font-size="10">yes</text>
+            <rect x="370" y="169" width="170" height="44" rx="6" class="d-box-accent"/>
+            <text x="455" y="191" text-anchor="middle" class="d-accent-text" font-size="12" dominant-baseline="middle">ready = true</text>
+            <path d="M160 218 V250" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+            <text x="170" y="238" class="d-label" font-size="10">no</text>
+            <rect x="60" y="250" width="200" height="48" rx="6" class="d-box"/>
+            <text x="160" y="270" text-anchor="middle" class="d-text" font-size="12">confirm peer</text>
+            <text x="160" y="285" text-anchor="middle" class="d-label" font-size="9">direct RPC</text>
+            <path d="M160 298 V322" class="d-muted-line" stroke-width="1.2" marker-end="url(#d4-m)"/>
+            <rect x="50" y="322" width="220" height="54" rx="6" class="d-box"/>
+            <text x="160" y="349" text-anchor="middle" class="d-text" font-size="12" dominant-baseline="middle">peer 状态?</text>
+            <path d="M270 339 H370" class="d-accent-line" stroke-width="1.3" marker-end="url(#d4-a)"/>
+            <text x="320" y="330" text-anchor="middle" class="d-label" font-size="10">valid</text>
+            <rect x="370" y="317" width="300" height="44" rx="6" class="d-box-accent"/>
+            <text x="520" y="333" text-anchor="middle" class="d-accent-text" font-size="11">Resign → follower → sync</text>
+            <text x="520" y="349" text-anchor="middle" class="d-label" font-size="9">peer 当主</text>
+            <path d="M270 359 L370 399" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+            <text x="310" y="371" text-anchor="middle" class="d-label" font-size="10">empty</text>
+            <rect x="370" y="377" width="300" height="44" rx="6" class="d-box-warn"/>
+            <text x="520" y="393" text-anchor="middle" class="d-warn-text" font-size="11">ready = true</text>
+            <text x="520" y="409" text-anchor="middle" class="d-label" font-size="9">数据已丢，告警</text>
+            <path d="M160 376 V410" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+            <text x="170" y="396" class="d-label" font-size="10">unreachable</text>
+            <rect x="50" y="410" width="220" height="54" rx="6" class="d-box"/>
+            <text x="160" y="437" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">presence 检查（未实现）</text>
+            <path d="M270 439 H370" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+            <text x="320" y="431" text-anchor="middle" class="d-label" font-size="10">跳过检查</text>
+            <rect x="370" y="417" width="300" height="44" rx="6" class="d-box-warn"/>
+            <text x="520" y="433" text-anchor="middle" class="d-warn-text" font-size="11">ready = true</text>
+            <text x="520" y="449" text-anchor="middle" class="d-label" font-size="9">空启动，告警</text>
+            <path d="M270 459 L370 499" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+            <text x="310" y="479" text-anchor="middle" class="d-label" font-size="10">设计目标</text>
+            <rect x="370" y="477" width="300" height="44" rx="6" class="d-box-warn"/>
+            <text x="520" y="499" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">fail-stop / retry（未实现）</text>
+            <text x="60" y="548" class="d-label" font-size="10">空节点不持有 leadership；只有 leader &amp;&amp; ready 才接流量</text>
+          </svg>
+        </div>
+      </div>
+      <figcaption>空节点不持有 leadership；只有 leader &amp;&amp; ready 才接流量。空节点让位后等对端升主，再从新主同步。分区恢复：老主失去 lease 立即 ready=false；<strong>实现现状：</strong>term 结束即释放本地状态，重连后从新主全量重装（设计目标是保留状态直到看到更高 epoch）；若此时对端不可达，重新当选会按空启动——见 §07 已知限制。</figcaption>
+    </figure>
+  </section>
+  <section class="section">
+    <div class="section-head"><span class="index">05</span><h2>故障切换预算</h2></div>
+    <p class="section-note">外部目标：进程 crash / 机器掉电 / 网络失联，备 ≤5s 感知，≤6s 开始服务（含客户端路由）。注意 etcd lease TTL 默认是 5s，要满足该预算需显式设置 ha_leader_lease_ttl_sec=4。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>阶段</th><th>最坏</th><th>取值</th></tr></thead>
+        <tbody>
+          <tr><td>crash → lease 过期 / 备感知</td><td>4.3s</td><td>T=4s，ε≤0.3s</td></tr>
+          <tr><td>感知 → ready</td><td>0.5s</td><td>P=0.5s</td></tr>
+          <tr><td>ready → 客户端路由</td><td>1.0s</td><td>R=1s</td></tr>
+          <tr><td>合计</td><td>5.8s</td><td>满足 5s 感知 / 6s 服务</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre class="config">etcd lease TTL         ha_leader_lease_ttl_sec，默认 5s；本页预算按 4s 计算（需显式配置）
+keepalive              etcd 内置 keepalive（设计目标 ~1s）
+local serve deadline   设计目标 3s / 3.2s；当前无独立开关，停服由 leadership monitor 触发
+presence               同一 session，TTL 4s（未实现）
+peer_probe_timeout     设计目标 200ms × 2；当前 connect 1s + probe RPC 1s
+promotion_budget       设计目标 0.5s（受 StopLoop join 影响，见遗留问题）
+client retry / LB      ≤1s（客户端侧）
+simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
+</pre>
+    <ul class="reasons">
+      <li><strong>为什么 TTL=4s：</strong>最坏情况是 crash 紧跟一次 keepalive，lease 要等满 T 才过期。感知 = T + ε；T=5s 时 5+ε 已经破 5s。T=4s 留 0.7s 余量。如果只要求平均而非最坏，T=5s 也能用（平均感知 ≈4.3–4.5s）。</li>
+      <li><strong>为什么 keepalive≈1s：</strong>deadline 必须大于 2×keepalive，才能容忍一次延迟/丢失；又必须小于 TTL，才能抢在服务端过期前停服。T=4s、K=1s → D=3s，2K=2s，留 1s 余量。client 固定 T/3≈1.3s 时，2K=2.6s，D 取 3.2s。</li>
+      <li><strong>为什么 deadline 是 3–3.2s：</strong>约束是 2K &lt; D &lt; T。D &lt; T 保证活着的旧主在备可以升主之前停服，避免双主；D &gt; 2K 保证一次 keepalive 抖动不误停。T−D≈0.8–1s 是分区场景的代价：旧主已停、备还不能升主，短空窗。把 D 推向 T 能缩小空窗，但安全余量也缩小；D ≥ T 就会重叠。</li>
+      <li><strong>为什么 P=0.5s：</strong>备已经在 campaign 队列里，leader key 一消失就上位；它非空、不需要追数据，只做 state check + role switch。1s 的 pull 落后不影响这一步。</li>
+      <li><strong>为什么 R=1s：</strong>备 ready ≠ 客户端能打过来。LB 检查间隔或客户端重试必须 ≤1s；如果 LB 5s 探一次，备 4.5s ready，客户端 9.5s 才恢复。</li>
+      <li><strong>crash 与分区的空窗不同：</strong>crash 时旧进程立即没了，空窗 = T − 相位 ≈3–4s；分区时旧主在 D 停服、备在 T 上位，空窗 = T−D ≈0.8–1s。新主的启动时间都是 T+ε+P，D 只影响分区空窗和防重叠。</li>
+      <li><strong>1s pull 是另一条预算：</strong>它决定新主的状态最多旧 1s，不决定多久能服务。备升主时直接用当前 applied 的状态，不等旧主。</li>
+      <li><strong>presence 的做法（未实现）：</strong>设计上计划与 election 共用 session，TTL=4s，不额外加 keepalive。key 在但 RPC 不通 → fail-stop/重试；key 没了且 RPC 不通 → 按进程已死处理（残余风险）。当前空节点只做一次 direct RPC 探测，不可达时 fail-open 直接空启动。</li>
+    </ul>
+    <p class="state-note">前提：etcd quorum 健康且 keepalive p99 ≪1s；备健康、非空、不在全量 resync；LB / 客户端重试 ≤1s。etcd 撑不住 4s 时，只能放宽目标或给这套服务独立 etcd。</p>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><span class="index">06</span><h2>状态与不变量</h2></div>
+    <p class="section-note">角色是意图，leader 是 lease，ready 是服务闸门。</p>
+    <div class="state-strip">
+      <div class="state-card"><span class="state-key">role</span><span class="state-desc">意图（配置）</span></div>
+      <div class="state-card"><span class="state-key">leader</span><span class="state-desc">leader key + lease 健康</span></div>
+      <div class="state-card"><span class="state-key">ready</span><span class="state-desc">对外服务</span></div>
+      <div class="state-eq">→</div>
+      <div class="state-result">serve = leader &amp;&amp; ready</div>
+    </div>
+    <p class="state-note">空节点允许 role=primary，但必须 leader=false、ready=false。空 = 未初始化（applied=0 / 无 lineage），不是 map 没有 key。lease 健康由 etcd keepalive + leadership monitor 判定；设计目标是本地 deadline 小于 etcd TTL（本页按 TTL=4s、deadline=3–3.2s 分析），超时立即 ready=false，不等网络恢复。当前实现没有独立的 local_serve_deadline 开关，停服由 monitor 触发。</p>
+    <ol class="invariants">
+      <li><span class="num">01</span><p>WAL 只记绝对 post-image（SET/DEL），可重复应用。</p></li>
+      <li><span class="num">02</span><p>快照带 base_index，从 base+1 追；base 在 BeginSnapshot 时随 WAL 前缀取得，副本随后分批读取。</p></li>
+      <li><span class="num">03</span><p>备发现 gap 不跳过去继续追：作废快照会话，在进程内 stage-and-swap 全量重装，再从 base+1 追；老主作废重装同样用 stage-and-swap。</p></li>
+      <li><span class="num">04</span><p>incarnation 变了 = 对端换了一个 WAL 实例（进程重启或重新升主都会换），不能盲信索引连续。</p></li>
+      <li><span class="num">05</span><p>ring 窗口要覆盖 1s pull 间隔、备短暂停机与全量扫描耗时；按峰值写速率/字节数定容，不能只按条数。</p></li>
+      <li><span class="num">06</span><p>领导权跟数据走；空节点赢了，对端有数据就 Resign（对端不可达时当前实现按空启动，见 §07）。</p></li>
+      <li><span class="num">07</span><p>snapshot / WAL 只由 leader 提供；只有 leader &amp;&amp; ready 接流量。</p></li>
+      <li><span class="num">08</span><p>空 = 未初始化（applied=0 / 无 lineage），不是 map 没有 key。</p></li>
+      <li><span class="num">09</span><p>失去 lease 立即停服；term 结束即释放本地内存状态，重新以空备加入并从新主全量重装。设计目标是保留本地状态直到看到更高 epoch，当前实现未做跨任期保留（见 §07）。</p></li>
+      <li><span class="num">10</span><p>全量扫描按 tenant / shard 分批（每片在 shard 读锁内取全）；批次间不做快照隔离；先扫完再回放 base+1 的 WAL。</p></li>
+    </ol>
+  </section>
+  <section class="section">
+    <div class="section-head"><span class="index">07</span><h2>故障与代价</h2></div>
+    <p class="section-note">真正的丢窗口是未复制的尾部（正常 ≤1s），以及脑裂期间老主 ack 的写；ring 覆盖只增加重同步成本。不做本地持久化，两边同时挂 = 全丢。已知限制：term 结束即释放内存状态，若对端此时不可达，重新当选会按空启动而丢全量；Simple HA 下 weight mutations 关闭，weight metadata 不复制、不进快照。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>场景</th><th>行为</th><th>数据影响</th></tr></thead>
+        <tbody>
+          <tr><td>主进程崩溃</td><td>备升主</td><td>丢未复制的尾巴（正常 ≤1s）</td></tr>
+          <tr><td>备落后被 ring 覆盖</td><td>备进程内重装 → 重新加入全量快照</td><td>不丢；备短暂不可用</td></tr>
+          <tr><td>主重启且空</td><td>让位给备，自己同步</td><td>丢未复制的尾巴（正常 ≤1s）</td></tr>
+          <tr><td>两边都重启且空</td><td>tie-break 空启动</td><td>全丢（内存，不做本地持久化）</td></tr>
+          <tr><td>全量扫描慢于 ring</td><td>扩 ring / 重建会话退避重试</td><td>不丢，可能反复重装</td></tr>
+          <tr><td>主备短暂断连</td><td>重连后追 WAL</td><td>不丢；延迟增加</td></tr>
+          <tr><td>老主脑裂后重连</td><td>失去 lease 停服并释放状态；重连后从新主全量重装</td><td>脑裂期间 ack 的写会丢 / 回退</td></tr>
+          <tr><td>在任主丢 lease 且对端不可达</td><td>term 结束释放状态；重新当选按空启动</td><td>全丢（已知限制，待做跨任期保留）</td></tr>
+          <tr><td>Simple HA + weight 管理</td><td>weight mutations 关闭</td><td>weight metadata 不复制、不进快照</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="contract"><strong>丢窗口：</strong>纯异步，已 ack 的写可能丢最后一段未复制的尾巴；正常 ≤ 一个 pull 间隔（约 1s）。脑裂期间老主 ack 的写会在重连重装时被丢弃。ring 覆盖不会丢历史，只会触发重同步。</p>
+    <p class="state-note">按本页参数：最坏感知 ≈4.3s，服务 ≈5.8s；crash 空窗 ≈3–4s，分区空窗 ≈0.8–1s。</p>
+  </section>
+
+  <section class="open">
+    <div class="section-head"><span class="tag">待讨论</span><h2>遗留问题</h2></div>
+    <p class="section-note">主路径已按当前实现校准；下面这些是未实现或还没拍板的点。</p>
+    <ol>
+      <li><strong>跨任期状态保留（高风险，未实现）</strong><p>当前 term 结束即释放在任 master 的内存状态，节点重新以空备加入。若唯一存活节点遇到 etcd lease 抖动、而对端又不可达，重新当选会按空启动并丢全量，超出“只丢 ≤1s 尾巴”的目标，也与不变量 06/09 的“领导权跟数据走”不一致。可行修法：term 结束时从已静默的 master 导出状态（writer Stop 会 drain durable callback，map 与 durable prefix 一致），填进 <code>PromotionContext</code> 交给已有的 <code>RestorePromotionBaseline</code>；需评估导出耗时与内存峰值。</p></li>
+      <li><strong>空节点 presence 检查（中风险，未实现）</strong><p>空节点只做一次 direct RPC 探测；对端不可达时 fail-open 直接空启动，没有按设计查询 presence key。探测响应只有一个 has_data，区分不了“对端空”和“对端正在全量同步”（同步完成前 has_lineage=false）。</p></li>
+      <li><strong>pull / ring 容量（低风险）</strong><p>评估 pull 速度跟不上写入增长的可能性不大；ring 仍需覆盖全量扫描耗时。备发现 gap 在进程内重装，失败按 backoff 重试，需配告警。</p></li>
+      <li><strong>全量扫描与重试</strong><p>不做 pin；按 tenant / shard 分批，批次间不做快照隔离；ring 要覆盖整个扫描时长；失败 / 覆盖后重建会话并退避重试；chunk 校验和与格式版本兼容尚未做（当前依赖 RPC 传输与 struct_pack 反序列化）。</p></li>
+      <li><strong>升主暂停时间（低风险）</strong><p>升主时 StopLoop 会 join 正在进行的 pull / snapshot chunk RPC（超时 5s / 10s），对端卡住时可能突破 P=0.5s 的预算；可考虑缩短超时或可中断的 RPC。</p></li>
+      <li><strong>快照基准与 apply-after-durable 的窗口（低风险）</strong><p>少数 durable-finalize 回调（例如 discard expired processing replica）在 WAL 提交后才修改 live map。若快照扫描恰好在这个毫秒级窗口内读到旧值，base+1 的 WAL 不会重放该修改，备会多保留一个已被主丢弃的副本；属 best-effort 范畴，若要做严可在 BeginSnapshot 前等待 writer 的 callback 队列排空。</p></li>
+      <li><strong>客户端 / LB 切流（redirect）</strong><p>备不支持读，读写都走主。LB 按 ready 路由；设计目标是非主时请求返回 redirect，target 带当前 leader + epoch；leader 未 ready 返回 not-ready / retry-after。当前 master 不内联返回 redirect，依赖 LB / 客户端重试；具体错误码 / 字段待集成系统确定。</p></li>
+    </ol>
+  </section>
+
+  <footer class="footer">
+    <span>Simple HA · 设计摘要</span>
+    <span>2026-10 · 已按当前实现校准，遗留项待续</span>
+  </footer>
+</div>
+</body>
+</html>
