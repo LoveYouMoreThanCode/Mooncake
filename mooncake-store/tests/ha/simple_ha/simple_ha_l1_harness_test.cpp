@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -17,7 +18,9 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "ha/simple_ha/simple_ha_leader_service.h"
 #include "master_service.h"
@@ -56,6 +59,13 @@ class SimpleHaStandbyControllerTestPeer {
 
     uint64_t AppliedBatchId() const {
         return controller_.applied_batch_id_.load(std::memory_order_acquire);
+    }
+
+    bool HasSegment(const std::string& transport_endpoint) const {
+        std::lock_guard<std::mutex> lock(controller_.store_mutex_);
+        return controller_.applier_ &&
+               controller_.applier_->GetSegmentRegistry().HasSegment(
+                   transport_endpoint);
     }
 
    private:
@@ -143,6 +153,15 @@ bool WaitFor(const std::function<bool()>& predicate,
     return predicate();
 }
 
+bool HasSegmentEndpoint(const std::vector<StandbySegmentInfo>& segments,
+                        const std::string& transport_endpoint) {
+    return std::any_of(
+        segments.begin(), segments.end(),
+        [&transport_endpoint](const StandbySegmentInfo& segment) {
+            return segment.transport_endpoint == transport_endpoint;
+        });
+}
+
 class LeaderHarness {
    public:
     // A small WAL ring makes the peer's first_batch_id jump ahead of the
@@ -156,16 +175,20 @@ class LeaderHarness {
     LeaderHarness(const LeaderHarness&) = delete;
     LeaderHarness& operator=(const LeaderHarness&) = delete;
 
-    void Mount(const std::string& name = "l1-peer-segment") {
+    void Mount(const std::string& name = "l1-peer-segment",
+               size_t base = kSegmentBase) {
+        Segment segment = MakeSegment(name, base);
+        ASSERT_TRUE(master_.MountSegment(segment, client_id_).has_value());
+        segments_[name] = segment;
         segment_name_ = name;
-        ASSERT_TRUE(
-            master_.MountSegment(MakeSegment(name), client_id_).has_value());
     }
 
-    void PutCompleted(const std::string& key) {
+    void PutCompleted(const std::string& key,
+                      const std::string& segment = {}) {
+        const std::string& target = segment.empty() ? segment_name_ : segment;
         ReplicateConfig config;
         config.replica_num = 1;
-        config.preferred_segments = {segment_name_};
+        config.preferred_segments = {target};
         ASSERT_TRUE(master_
                         .PutStart(client_id_, key, TenantId::Default(),
                                   /*slice_length=*/1024, config)
@@ -182,6 +205,17 @@ class LeaderHarness {
     void Remove(const std::string& key) {
         ASSERT_TRUE(
             master_.Remove(key, TenantId::Default()).has_value());
+    }
+
+    void UnmountSegment(const std::string& name) {
+        auto it = segments_.find(name);
+        ASSERT_NE(it, segments_.end());
+        ASSERT_TRUE(
+            master_.UnmountSegment(it->second.id, client_id_).has_value());
+        segments_.erase(it);
+        if (segment_name_ == name) {
+            segment_name_.clear();
+        }
     }
 
     bool Start() {
@@ -220,6 +254,7 @@ class LeaderHarness {
     MasterService master_;
     std::unique_ptr<SimpleHaLeaderService> service_;
     UUID client_id_{generate_uuid()};
+    std::unordered_map<std::string, Segment> segments_;
     std::string segment_name_;
     uint16_t port_{0};
 };
@@ -350,6 +385,48 @@ TEST(SimpleHaL1HarnessTest, WalRemoveDeletesMergedKey) {
     ASSERT_TRUE(WaitFor(
         [&] { return !test_peer.StoreContains("default", "doomed"); }));
     EXPECT_TRUE(test_peer.StoreContains("default", "keeper"));
+}
+
+TEST(SimpleHaL1HarnessTest, WalSegmentOpsReachPromotion) {
+    LeaderHarness peer;
+    peer.Mount("l1-unmount-segment");
+    peer.PutCompleted("unmount-doomed");
+    ASSERT_TRUE(peer.Start());
+
+    StandbyHarness standby(peer.port());
+    ASSERT_TRUE(standby.Start());
+
+    SimpleHaStandbyControllerTestPeer test_peer(standby.controller());
+    ASSERT_TRUE(WaitFor([&] {
+        return !test_peer.MergeIncomplete() &&
+               test_peer.StoreContains("default", "unmount-doomed") &&
+               test_peer.HasSegment("l1-unmount-segment");
+    }));
+
+    // Mounted after the standby's baseline, so this segment reaches the
+    // standby through WAL replay instead of the snapshot's segment list.
+    peer.Mount("l1-keep-segment", kSegmentBase + kSegmentSize);
+    peer.PutCompleted("keep-alive", "l1-keep-segment");
+    ASSERT_TRUE(WaitFor([&] {
+        return test_peer.HasSegment("l1-keep-segment") &&
+               test_peer.StoreContains("default", "keep-alive");
+    }));
+
+    // Unmounting drops the objects on the segment (through the REMOVE /
+    // PUT_END entries emitted by ClearStaleHandles) and then the segment
+    // itself (SEGMENT_UNMOUNT). Both must be replayed before promotion.
+    peer.UnmountSegment("l1-unmount-segment");
+    ASSERT_TRUE(WaitFor([&] {
+        return !test_peer.HasSegment("l1-unmount-segment") &&
+               !test_peer.StoreContains("default", "unmount-doomed");
+    }));
+
+    auto promoted = standby.Promote();
+    ASSERT_TRUE(promoted.has_value()) << toString(promoted.error());
+    EXPECT_TRUE(promoted->metadata_store->Exists("default", "keep-alive"));
+    EXPECT_FALSE(promoted->metadata_store->Exists("default", "unmount-doomed"));
+    EXPECT_TRUE(HasSegmentEndpoint(promoted->segments, "l1-keep-segment"));
+    EXPECT_FALSE(HasSegmentEndpoint(promoted->segments, "l1-unmount-segment"));
 }
 
 #if defined(MOONCAKE_ENABLE_TEST_FAILPOINTS)
