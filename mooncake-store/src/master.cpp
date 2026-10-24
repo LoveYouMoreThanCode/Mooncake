@@ -21,6 +21,7 @@
 #include "duration_utils.h"
 #include "ha/ha_types.h"
 #include "ha/leadership/master_service_supervisor.h"
+#include "ha/simple_ha/simple_ha_flags.h"
 #include "ha/snapshot/batch_oplog/config.h"
 
 #include "http_metadata_server.h"
@@ -706,6 +707,7 @@ void InitMasterConf(const mooncake::DefaultConfig& default_config,
     default_config.GetUInt32("batch_oplog_retry_timeout_sec",
                              &master_config.batch_oplog_retry_timeout_sec,
                              FLAGS_batch_oplog_retry_timeout_sec);
+    InitSimpleHaConf(default_config, master_config);
     default_config.GetString("root_fs_dir", &master_config.root_fs_dir,
                              FLAGS_root_fs_dir);
     default_config.GetInt64("global_file_segment_size",
@@ -1153,6 +1155,7 @@ void LoadConfigFromCmdline(mooncake::MasterConfig& master_config,
         !conf_set) {
         master_config.enable_oplog = FLAGS_enable_oplog;
     }
+    LoadSimpleHaConfFromCmdline(master_config, conf_set);
     if ((google::GetCommandLineFlagInfo(
              "weight_management_oplog_capability_confirmed", &info) &&
          !info.is_default) ||
@@ -1498,6 +1501,7 @@ int main(int argc, char* argv[]) {
         LOG(FATAL) << "enable_oplog requires ha_backend_type=etcd or redis";
         return 1;
     }
+    ValidateSimpleHaConfig(master_config);
     if (auto error = ValidateBatchOpLogSnapshotConfig(master_config)) {
         LOG(FATAL) << *error;
         return 1;

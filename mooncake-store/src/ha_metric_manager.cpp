@@ -195,7 +195,11 @@ HAMetricManager::HAMetricManager()
           "6=PROMOTING, 7=PROMOTED, 8=FAILED)"),
       state_transitions_total_(
           "ha_state_transitions_total",
-          "Total number of Standby state machine transitions") {
+          "Total number of Standby state machine transitions"),
+      simple_ha_degraded_promotions_total_(
+          "ha_simple_ha_degraded_promotions_total",
+          "Total number of Simple HA promotions that served without a "
+          "completed WAL catch-up") {
     // Initialize gauges to 0 for proper Prometheus output
     oplog_last_sequence_id_.update(0);
     oplog_applied_sequence_id_.update(0);
@@ -449,6 +453,15 @@ int64_t HAMetricManager::get_state_transitions_total() {
     return static_cast<int64_t>(state_transitions_total_.value());
 }
 
+void HAMetricManager::inc_simple_ha_degraded_promotions(int64_t val) {
+    simple_ha_degraded_promotions_total_.inc(val);
+}
+
+int64_t HAMetricManager::get_simple_ha_degraded_promotions_total() {
+    return static_cast<int64_t>(
+        simple_ha_degraded_promotions_total_.value());
+}
+
 // ========== Serialization ==========
 
 std::string HAMetricManager::serialize_metrics() {
@@ -487,6 +500,7 @@ std::string HAMetricManager::serialize_metrics() {
     serialize_metric(oplog_dropped_put_end_total_);
     serialize_metric(oplog_batch_commits_total_);
     serialize_metric(oplog_sync_batch_commits_total_);
+    serialize_metric(simple_ha_degraded_promotions_total_);
 #ifdef MOONCAKE_ENABLE_OPLOG_PERF_METRICS
     serialize_metric(batch_record_durable_batches_total_);
     serialize_metric(batch_record_durable_entries_total_);
@@ -675,6 +689,8 @@ std::string HAMetricManager::get_summary_string() {
     ss << ", etcd_fail=" << get_oplog_etcd_write_failures_total();
     ss << ", watch_disconn=" << get_oplog_watch_disconnections_total();
     ss << ", state=" << get_standby_state();
+    ss << ", simple_ha_degraded_promotions="
+       << get_simple_ha_degraded_promotions_total();
     const auto writer = get_writer_runtime();
     ss << ", writer_accepting=" << (writer.accepting ? "true" : "false")
        << ", writer_retry_count=" << writer.retry_count

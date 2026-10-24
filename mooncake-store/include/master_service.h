@@ -36,6 +36,7 @@
 #include "count_min_sketch.h"
 #include "deadline_scheduler.h"
 #include "dynamic_replication_controller.h"
+#include "ha/simple_ha/simple_ha_config.h"
 #include "lease.h"
 #include "master_metric_manager.h"
 #include "mutex.h"
@@ -76,6 +77,12 @@ class HaKvBackend;
 class HttpMetadataServer;
 class OpLogBatchStorage;
 class OrderedOpLogWriter;
+class SimpleHaWal;
+class SimpleHaLeaderService;
+
+namespace ha {
+struct PromotionContext;
+}  // namespace ha
 
 namespace test {
 class MasterServiceTestPeer;
@@ -123,6 +130,7 @@ class MasterService {
     friend class MasterStoreBackend;
     friend class test::MasterServiceTestPeer;
     friend class ClientOffboardingWorker;
+    friend class SimpleHaLeaderService;
 
    public:
     using NoFProbeFn =
@@ -169,6 +177,14 @@ class MasterService {
     void SetBatchOpLogTerminalCallback(
         OrderedOpLogWriter::TerminalCallback callback);
     void StopBatchOpLogWriter();
+
+    // Move this service's object metadata into a standby-ready baseline
+    // without duplicating the dataset: each object is copied into the context
+    // and erased from this service before the next one is handled, so the two
+    // representations never fully coexist. The OpLog writer must be stopped
+    // first so the map matches the durable prefix. Simple HA only.
+    tl::expected<void, ErrorCode> DrainIntoPromotionContext(
+        ha::PromotionContext& context);
 
     /**
      * @brief Mount a memory segment for buffer allocation. This function is
@@ -1429,6 +1445,10 @@ class MasterService {
         kFull,
         kPreserveOld,
         kAbortOnly,
+        // Detach for retention: release quota like kFull but do not publish a
+        // KV removal event. Used when moving a serving map into a standby
+        // baseline, where clients must not observe a mass delete.
+        kDrain,
     };
     ObjectMap::iterator EraseMetadata(TenantState& tenant_state,
                                       ObjectMap::iterator it,
@@ -2362,6 +2382,7 @@ class MasterService {
     const bool enable_oplog_;
     const bool weight_management_mutations_enabled_;
     const uint32_t oplog_batch_max_entries_;
+    const SimpleHaConfig simple_ha_;
     const uint64_t restore_repair_durable_timeout_ms_;
 
     // cluster id for persistent sub directory
@@ -2634,6 +2655,7 @@ class MasterService {
     std::shared_ptr<HaKvBackend> batch_oplog_kv_backend_;
     std::unique_ptr<OpLogBatchStorage> batch_oplog_storage_;
     std::unique_ptr<OrderedOpLogWriter> ordered_oplog_writer_;
+    std::shared_ptr<SimpleHaWal> simple_ha_wal_;
     BatchOpLogWriterFactory batch_oplog_writer_factory_;
 
     // OpLog publishing helpers
@@ -2645,6 +2667,13 @@ class MasterService {
         const std::vector<Replica::Descriptor>& replicas) const;
     ErrorCode InitializeBatchOpLogWriter(std::shared_ptr<HaKvBackend> backend,
                                          bool require_fenced_writer);
+    ErrorCode InitializeSimpleHaWriter();
+    void InitializeSimpleHaWriterOrThrow();
+    // Blocks until every durable-finalize callback through `sequence_id` has
+    // run, so a snapshot base taken at that prefix cannot miss a deferred map
+    // mutation (for example an erase that happens after the OpLog is durable).
+    bool WaitForSimpleHaCallbacks(uint64_t sequence_id,
+                                  std::chrono::milliseconds timeout);
     tl::expected<uint64_t, ErrorCode> AppendOpLogVisibleBeforeDurable(
         OpType type, const std::string& tenant_id, const std::string& key,
         const std::string& payload);

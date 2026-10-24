@@ -305,6 +305,11 @@ class HAMetricManager {
     void inc_state_transitions(int64_t val = 1);
     int64_t get_state_transitions_total();
 
+    // Simple HA promotions that started serving without a completed WAL
+    // catch-up (the bootstrap snapshot window described in the design doc).
+    void inc_simple_ha_degraded_promotions(int64_t val = 1);
+    int64_t get_simple_ha_degraded_promotions_total();
+
     // ========== Serialization ==========
 
     /**
@@ -367,6 +372,7 @@ class HAMetricManager {
     // State Machine
     ylt::metric::gauge_t standby_state_;
     ylt::metric::counter_t state_transitions_total_;
+    ylt::metric::counter_t simple_ha_degraded_promotions_total_;
 
     mutable std::mutex snapshot_runtime_mutex_;
     SnapshotRuntime snapshot_runtime_;

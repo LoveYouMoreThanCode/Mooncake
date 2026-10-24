@@ -9,6 +9,7 @@
 #include <glog/logging.h>
 
 #include "ha/kv/etcd_ha_kv_backend.h"
+#include "ha/simple_ha/simple_ha_standby_controller.h"
 #include "ha/snapshot/batch_oplog/batch_oplog_snapshot_coordinator.h"
 #include "ha/snapshot/batch_oplog/batch_oplog_snapshot_provider.h"
 #include "ha/snapshot/batch_oplog/metadata.h"
@@ -468,6 +469,9 @@ class CapabilityDrivenStandbyController final : public StandbyController {
 std::unique_ptr<StandbyController> CreateStandbyController(
     const HABackendSpec& spec, const MasterServiceSupervisorConfig& config,
     StandbyController::StartErrorInjector start_error_injector) {
+    if (config.simple_ha.enable) {
+        return std::make_unique<SimpleHaStandbyController>(config);
+    }
     const auto capabilities = BuildStandbyRuntimeCapabilities(spec, config);
     if (capabilities.has_snapshot_bootstrap ||
         capabilities.has_oplog_following) {

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" role="img" aria-label="升主决策流程：先关 ready；state 有效则服务；空则确认对端；对端有数据就 Resign 让位并同步">
+  <style>
+    .d-box { fill: #fbfcfa; stroke: #b7c4be; }
+    .d-box-muted { fill: #e9eeeb; stroke: #d4dcd7; }
+    .d-box-accent { fill: #dceee9; stroke: #0d6b5f; }
+    .d-box-warn { fill: #f5e8d8; stroke: #9a5a12; }
+    .d-text { fill: #1b2320; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-label { fill: #60706a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-accent-text { fill: #0d6b5f; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-warn-text { fill: #9a5a12; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-line { stroke: #b7c4be; fill: none; }
+    .d-muted-line { stroke: #60706a; fill: none; }
+    .d-accent-line { stroke: #0d6b5f; fill: none; }
+    .d-warn-line { stroke: #9a5a12; fill: none; }
+    .d-marker-muted { fill: #60706a; }
+    .d-marker-accent { fill: #0d6b5f; }
+    .d-marker-warn { fill: #9a5a12; }
+  </style>
+  <defs>
+    <marker id="d4-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-muted"/></marker>
+    <marker id="d4-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-accent"/></marker>
+    <marker id="d4-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-warn"/></marker>
+  </defs>
+  <rect x="60" y="20" width="200" height="42" rx="6" class="d-box"/>
+  <text x="160" y="41" text-anchor="middle" class="d-text" font-size="12" dominant-baseline="middle">campaign won</text>
+  <path d="M160 62 V92" class="d-muted-line" stroke-width="1.2" marker-end="url(#d4-m)"/>
+  <rect x="60" y="92" width="200" height="42" rx="6" class="d-box"/>
+  <text x="160" y="113" text-anchor="middle" class="d-text" font-size="12" dominant-baseline="middle">ready = false</text>
+  <path d="M160 134 V164" class="d-muted-line" stroke-width="1.2" marker-end="url(#d4-m)"/>
+  <rect x="50" y="164" width="220" height="54" rx="6" class="d-box-accent"/>
+  <text x="160" y="191" text-anchor="middle" class="d-accent-text" font-size="12" dominant-baseline="middle">自己 state valid?</text>
+  <path d="M270 191 H370" class="d-accent-line" stroke-width="1.3" marker-end="url(#d4-a)"/>
+  <text x="320" y="182" text-anchor="middle" class="d-label" font-size="10">yes</text>
+  <rect x="370" y="169" width="170" height="44" rx="6" class="d-box-accent"/>
+  <text x="455" y="191" text-anchor="middle" class="d-accent-text" font-size="12" dominant-baseline="middle">ready = true</text>
+  <path d="M160 218 V250" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+  <text x="170" y="238" class="d-label" font-size="10">no</text>
+  <rect x="60" y="250" width="200" height="48" rx="6" class="d-box"/>
+  <text x="160" y="270" text-anchor="middle" class="d-text" font-size="12">confirm peer</text>
+  <text x="160" y="285" text-anchor="middle" class="d-label" font-size="9">direct RPC</text>
+  <path d="M160 298 V322" class="d-muted-line" stroke-width="1.2" marker-end="url(#d4-m)"/>
+  <rect x="50" y="322" width="220" height="54" rx="6" class="d-box"/>
+  <text x="160" y="349" text-anchor="middle" class="d-text" font-size="12" dominant-baseline="middle">peer 状态?</text>
+  <path d="M270 339 H370" class="d-accent-line" stroke-width="1.3" marker-end="url(#d4-a)"/>
+  <text x="320" y="330" text-anchor="middle" class="d-label" font-size="10">valid</text>
+  <rect x="370" y="317" width="300" height="44" rx="6" class="d-box-accent"/>
+  <text x="520" y="333" text-anchor="middle" class="d-accent-text" font-size="11">Resign → follower → sync</text>
+  <text x="520" y="349" text-anchor="middle" class="d-label" font-size="9">peer 当主</text>
+  <path d="M270 359 L370 399" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+  <text x="310" y="371" text-anchor="middle" class="d-label" font-size="10">empty</text>
+  <rect x="370" y="377" width="300" height="44" rx="6" class="d-box-warn"/>
+  <text x="520" y="393" text-anchor="middle" class="d-warn-text" font-size="11">ready = true</text>
+  <text x="520" y="409" text-anchor="middle" class="d-label" font-size="9">数据已丢，告警</text>
+  <path d="M160 376 V410" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+  <text x="170" y="396" class="d-label" font-size="10">unreachable</text>
+  <rect x="50" y="410" width="220" height="54" rx="6" class="d-box"/>
+  <text x="160" y="437" text-anchor="middle" class="d-text" font-size="11" dominant-baseline="middle">presence 检查（未实现）</text>
+  <path d="M270 439 H370" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+  <text x="320" y="431" text-anchor="middle" class="d-label" font-size="10">跳过检查</text>
+  <rect x="370" y="417" width="300" height="44" rx="6" class="d-box-warn"/>
+  <text x="520" y="433" text-anchor="middle" class="d-warn-text" font-size="11">ready = true</text>
+  <text x="520" y="449" text-anchor="middle" class="d-label" font-size="9">空启动，告警</text>
+  <path d="M270 459 L370 499" class="d-warn-line" stroke-width="1.3" marker-end="url(#d4-w)"/>
+  <text x="310" y="479" text-anchor="middle" class="d-label" font-size="10">设计目标</text>
+  <rect x="370" y="477" width="300" height="44" rx="6" class="d-box-warn"/>
+  <text x="520" y="499" text-anchor="middle" class="d-warn-text" font-size="11" dominant-baseline="middle">fail-stop / retry（未实现）</text>
+  <text x="60" y="548" class="d-label" font-size="10">空节点不持有 leadership；只有 leader &amp;&amp; ready 才接流量</text>
+</svg>

@@ -45,6 +45,7 @@
 #include "ha/kv/ha_kv_backend_factory.h"
 #include "ha/oplog/oplog_batch_storage.h"
 #include "ha/oplog/ordered_oplog_writer.h"
+#include "ha/simple_ha/simple_ha_restore.h"
 #include "types.h"
 #include "common/zstd_util.h"
 #include "common/file_util.h"
@@ -200,12 +201,15 @@ MasterService::MasterService(const MasterServiceConfig& config)
                            config.dynamic_replication_heat_window_seconds,
                            config.dynamic_replication_admission_qps_threshold,
                            config.dynamic_replication_max_memory_replicas),
-      enable_oplog_(config.enable_ha && config.enable_oplog &&
+      enable_oplog_(config.enable_ha &&
+                    (config.enable_oplog || config.simple_ha.enable) &&
                     ha::HaBackendSupportsOpLog(config.ha_backend_type)),
       weight_management_mutations_enabled_(
           !enable_oplog_ ||
-          config.weight_management_oplog_capability_confirmed),
+          (!config.simple_ha.enable &&
+           config.weight_management_oplog_capability_confirmed)),
       oplog_batch_max_entries_(config.oplog_batch_max_entries),
+      simple_ha_(config.simple_ha),
       restore_repair_durable_timeout_ms_(
           config.restore_repair_durable_timeout_ms),
       cluster_id_(config.cluster_id),
@@ -384,7 +388,9 @@ MasterService::MasterService(const MasterServiceConfig& config)
     kv_track_tenant_epochs_ = KvEventsEnabled();
 
     if (enable_oplog_ && !cluster_id_.empty()) {
-        if (config.ha_backend_connstring.empty()) {
+        if (config.simple_ha.enable) {
+            InitializeSimpleHaWriterOrThrow();
+        } else if (config.ha_backend_connstring.empty()) {
             LOG(INFO) << "Skipping automatic batch-record OpLog writer "
                          "initialization; no HA backend connstring configured";
         } else {
@@ -2084,7 +2090,7 @@ MasterService::ObjectMap::iterator MasterService::EraseMetadata(
         previous_media.insert(previous_media.end(), previous_media_hint.begin(),
                               previous_media_hint.end());
         SyncKvObjectState(key, metadata, tenant_id, previous_media);
-    } else {
+    } else if (quota_mode != QuotaEraseMode::kDrain) {
         PublishKvRemoved(key, metadata, tenant_id, previous_media_hint);
     }
 
@@ -2127,6 +2133,7 @@ MasterService::ObjectMap::iterator MasterService::EraseMetadata(
     }
     switch (quota_mode) {
         case QuotaEraseMode::kFull:
+        case QuotaEraseMode::kDrain:
             if (enable_multi_tenants_ &&
                 metadata.quota_ledger.TotalChargedBytes() != 0) {
                 auto release_result = metadata.quota_ledger.ReleaseAll(
@@ -3496,6 +3503,8 @@ tl::expected<void, ErrorCode> MasterService::PublishRestoredObjects(
             metadata.lease_ = RegisterGroupMember(
                 object.tenant_id, object.user_key, standby_meta.group_id);
         }
+        MaybeGrantSimpleHaRestoreLease(simple_ha_.enable, metadata,
+                                       default_kv_lease_ttl_);
         // Counted like a LOCAL_DISK replica added, since erasing the object
         // uncounts it.
         accessor.OnDiskReplicaAdded(metadata);

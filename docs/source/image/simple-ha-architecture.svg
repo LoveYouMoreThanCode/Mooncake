@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" role="img" aria-label="etcd 下方两个节点，主节点持有 KV 与 WAL，备节点从主拉取快照和 WAL">
+  <style>
+    .d-box { fill: #fbfcfa; stroke: #b7c4be; }
+    .d-box-muted { fill: #e9eeeb; stroke: #d4dcd7; }
+    .d-box-accent { fill: #dceee9; stroke: #0d6b5f; }
+    .d-box-warn { fill: #f5e8d8; stroke: #9a5a12; }
+    .d-text { fill: #1b2320; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-label { fill: #60706a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-accent-text { fill: #0d6b5f; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-warn-text { fill: #9a5a12; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .d-line { stroke: #b7c4be; fill: none; }
+    .d-muted-line { stroke: #60706a; fill: none; }
+    .d-accent-line { stroke: #0d6b5f; fill: none; }
+    .d-warn-line { stroke: #9a5a12; fill: none; }
+    .d-marker-muted { fill: #60706a; }
+    .d-marker-accent { fill: #0d6b5f; }
+    .d-marker-warn { fill: #9a5a12; }
+  </style>
+  <defs>
+    <marker id="d1-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-muted"/></marker>
+    <marker id="d1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-marker-accent"/></marker>
+  </defs>
+  <rect x="320" y="18" width="260" height="66" rx="8" class="d-box-muted"/>
+  <text x="450" y="45" text-anchor="middle" class="d-text" font-size="15" font-weight="600">etcd</text>
+  <text x="450" y="65" text-anchor="middle" class="d-label" font-size="11">leader key · lease</text>
+  <rect x="100" y="180" width="280" height="110" rx="10" class="d-box"/>
+  <text x="120" y="207" class="d-text" font-size="13" font-weight="600">NODE A · LEADER</text>
+  <text x="120" y="228" class="d-label" font-size="11">map + WAL ring</text>
+  <rect x="120" y="244" width="112" height="28" rx="4" class="d-box-muted"/>
+  <text x="176" y="262" text-anchor="middle" class="d-label" font-size="10">KV map</text>
+  <rect x="244" y="244" width="116" height="28" rx="4" class="d-box-muted"/>
+  <text x="302" y="262" text-anchor="middle" class="d-label" font-size="10">WAL ring</text>
+  <rect x="520" y="180" width="280" height="110" rx="10" class="d-box"/>
+  <text x="540" y="207" class="d-text" font-size="13" font-weight="600">NODE B · STANDBY</text>
+  <text x="540" y="228" class="d-label" font-size="11">map (replica)</text>
+  <rect x="540" y="244" width="140" height="28" rx="4" class="d-box-muted"/>
+  <text x="610" y="262" text-anchor="middle" class="d-label" font-size="10">KV map</text>
+  <path d="M240 180 V130 H380 V84" class="d-muted-line" stroke-width="1.2" marker-end="url(#d1-m)"/>
+  <path d="M660 180 V130 H520 V84" class="d-muted-line" stroke-width="1.2" marker-end="url(#d1-m)"/>
+  <text x="310" y="121" text-anchor="middle" class="d-label" font-size="10">campaign / keepalive</text>
+  <text x="590" y="121" text-anchor="middle" class="d-label" font-size="10">campaign / keepalive</text>
+  <path d="M520 234 H380" class="d-accent-line" stroke-width="1.6" marker-end="url(#d1-a)"/>
+  <text x="450" y="224" text-anchor="middle" class="d-accent-text" font-size="10">pull snapshot / WAL</text>
+  
+  <text x="18" y="228" class="d-label" font-size="10">clients</text>
+  <path d="M62 244 H100" class="d-muted-line" stroke-width="1.2" marker-end="url(#d1-m)"/>
+  <text x="80" y="236" text-anchor="middle" class="d-label" font-size="9">R/W</text>
+</svg>

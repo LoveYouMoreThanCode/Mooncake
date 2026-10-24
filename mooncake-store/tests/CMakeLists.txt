@@ -520,6 +520,7 @@ target_link_libraries(shutdown_request_test PRIVATE glog::glog gtest gtest_main
                                                     pthread)
 add_test(NAME shutdown_request_test COMMAND shutdown_request_test)
 add_ha_test(master_service_ha_test ha/master_service_ha_test.cpp)
+add_subdirectory(ha/simple_ha)
 
 foreach(
   target
