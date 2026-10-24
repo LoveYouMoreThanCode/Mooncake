@@ -548,6 +548,8 @@ add_ha_core_test(simple_ha_restore_lease_test
 add_ha_core_test(simple_ha_snapshot_cursor_test
                  ha/simple_ha/simple_ha_snapshot_cursor_test.cpp)
 add_ha_core_test(simple_ha_drain_test ha/simple_ha/simple_ha_drain_test.cpp)
+add_ha_core_test(simple_ha_l1_harness_test
+                 ha/simple_ha/simple_ha_l1_harness_test.cpp)
 
 foreach(
   target

@@ -9,6 +9,7 @@
 #include <glog/logging.h>
 
 #include "ha/oplog/oplog_batch_codec.h"
+#include "ha/oplog/oplog_test_failpoint.h"
 #include "ha/simple_ha/simple_ha_leader_service.h"
 #include "ha_metric_manager.h"
 #include "metadata_store.h"
@@ -415,6 +416,9 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
                 return ErrorCode::INTERNAL_ERROR;
             }
         }
+        // Test-only seam for the L1 harness: stop the peer while a merge is
+        // in flight. Compiled out unless MOONCAKE_ENABLE_TEST_FAILPOINTS.
+        TestFailPoint::Wait("simple_ha_snapshot_chunk_merged");
         tenant_index = chunk->next_tenant_index;
         shard_index = chunk->next_shard_index;
         offset = chunk->next_offset;

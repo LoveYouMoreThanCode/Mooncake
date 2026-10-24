@@ -22,7 +22,10 @@
 
 namespace mooncake {
 class SimpleHaLeaderService;
-}
+namespace test {
+class SimpleHaStandbyControllerTestPeer;
+}  // namespace test
+}  // namespace mooncake
 
 namespace mooncake::ha {
 
@@ -49,6 +52,8 @@ class SimpleHaStandbyController final : public StandbyController {
     ErrorCode RestorePromotionBaseline(PromotionContext context) override;
 
    private:
+    friend class mooncake::test::SimpleHaStandbyControllerTestPeer;
+
     void RunLoop();
     void StopLoop();
     void WaitForNextPoll(std::chrono::milliseconds delay);
