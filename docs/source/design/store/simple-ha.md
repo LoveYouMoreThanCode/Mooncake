@@ -153,16 +153,32 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 
 按本页参数：最坏感知 ≈4.3s，服务 ≈5.8s；crash 空窗 ≈3–4s，分区空窗 ≈0.8–1s。
 
-## 遗留问题
+## 遗留问题与后续工作
 
-主路径已按当前实现校准；下面这些是未实现或还没拍板的点。
+主路径已按当前实现校准；跨任期 cursor 的修复见不变量 15。L1/L2/L3 由
+`scripts/run_simple_ha_e2e.sh` 串起（opt-in，需要 Go/etcd），CI 的 etcd
+作业会自动跑 L2。下面按优先级记录未实现或还没拍板的点。
+
+### P1（可靠性 / 可运维性）
 
 1. **空节点 presence 检查（中风险，未实现）** —— 空节点只做一次 direct RPC 探测；对端不可达时 fail-open 直接空启动，没有按设计查询 presence key。探测响应只有一个 `has_data`，区分不了“对端空”和“对端正在全量同步”（同步完成前 `has_lineage=false`）。
-2. **pull / ring 容量（低风险）** —— 评估 pull 速度跟不上写入增长的可能性不大；ring 仍需覆盖全量扫描耗时。备发现 gap 在进程内重装，失败按 backoff 重试，需配告警。
-3. **全量扫描与重试** —— 不做 pin；按 tenant / shard 分批，批次间不做快照隔离；ring 要覆盖整个扫描时长；失败 / 覆盖后重建会话并退避重试；chunk 校验和与格式版本兼容尚未做（当前依赖 RPC 传输与 struct_pack 反序列化）。
+2. **merge 增长上限与指标（中风险）** —— 本地独有 key 会随每次 merge 单调累积；需要容量上限、`merged_extra_keys` / merge 次数 / partial-merge 升主告警，以及超限策略（停止 merge 或告警继续）。
+3. **standby lag / merge 可观测性** —— 当前只记录 degraded promotion；把 `peer_durable_seq - applied_seq` 接到 `ha_oplog_standby_lag`，并暴露 merge 是否完整，便于告警。
 4. **升主暂停时间（低风险）** —— 升主时 `StopLoop` 会 join 正在进行的 pull / snapshot chunk RPC（超时 5s / 10s），对端卡住时可能突破 P=0.5s 的预算；可考虑缩短超时或可中断的 RPC。
 5. **客户端 / LB 切流（redirect）** —— 备不支持读，读写都走主。LB 按 ready 路由；设计目标是非主时请求返回 redirect，target 带当前 leader + epoch；leader 未 ready 返回 not-ready / retry-after。当前 master 不内联返回 redirect，依赖 LB / 客户端重试；具体错误码 / 字段待集成系统确定。
-6. **全量 resync 期间的降级升主（已接受）** —— 扫描完成但 WAL 未追平老主就故障时，备以扫描得到的混合状态升主：每个 key 是某个合法 post-image，但不存在全局一致的 cursor。选择可用性优先——老主已故障时 fail-close 没有恢复路径。已输出 WARN（applied / peer_durable / lag / peer_unreachable）并累加 `ha_simple_ha_degraded_promotions_total`；若上层依赖跨 key 同版本，需要自行做版本校验或改用 batch OpLog 路径。
-7. **快照 merge 的已知代价（已接受）** —— 新主在快照 base 之前删除、且不在重放 WAL 里的 key 会复活；本地独有记录会随每次 merge 单调累积，需要容量上限和告警；同 key 冲突采用 peer wins，老主尾巴里同 key 的新值会被覆盖。不引入 per-key 版本号，保持实现简单；key 复用很少，认为这个代价可接受。
+6. **运维文档 / runbook** —— 两节点参数（`simple_ha_*`）、etcd TTL=4s 的建议、merge 语义（删除复活窗口、本地独有记录增长）、常见故障恢复步骤。
 
-*2026-10 · 已按当前实现校准，遗留项待续*
+### P2（低风险 / 清理）
+
+7. **`SnapshotSegments` 防御性过滤** —— 跳过无效 endpoint / 重复 segment；merge 时过滤陈旧 segment 上不可读的 replica，避免 restore 整体失败。
+8. **weight mutations** —— Simple HA 下被强制关闭；确认是否可接受，或后续把 weight metadata 纳入快照 / OpLog。
+9. **pull / ring 容量与全量扫描重试** —— ring 仍需覆盖全量扫描耗时；备发现 gap 在进程内重装，失败按 backoff 重试，需配告警；chunk 校验和与格式版本兼容尚未做。
+10. **旧路径清理** —— 检查 `preserve_baseline_` / `preserved_segments_` 等旧分支和 merge 后不再使用的 snapshot 路径。
+
+### 已接受（不做或暂不处理）
+
+- **全量 resync 期间的降级升主** —— 扫描完成但 WAL 未追平老主就故障时，备以扫描得到的混合状态升主：每个 key 是某个合法 post-image，但不存在全局一致的 cursor。选择可用性优先——老主已故障时 fail-close 没有恢复路径。已输出 WARN（applied / peer_durable / lag / peer_unreachable）并累加 `ha_simple_ha_degraded_promotions_total`；若上层依赖跨 key 同版本，需要自行做版本校验或改用 batch OpLog 路径。
+- **快照 merge 的代价** —— 新主在快照 base 之前删除、且不在重放 WAL 里的 key 会复活；本地独有记录会单调累积（见 P1-2）；同 key 冲突采用 peer wins，老主尾巴里同 key 的新值会被覆盖。不引入 per-key 版本号，key 复用很少，认为这个代价可接受。
+- **replica ID 作用域** —— 只保证单对象内唯一，不保证跨 lineage 全局唯一；新 ID 在 restore 后抬到 merged max 之上。
+
+*2026-10 · 已按当前实现校准*
