@@ -19,18 +19,20 @@ orphan: true
 - **L2 supervisor e2e**：自起 etcd + 两个真实 master 进程，覆盖
   leader crash 后备升主保留数据、etcd 重启后旧主用保留状态重新升主。
   目标：`simple_ha_supervisor_e2e_test`，仅 `STORE_USE_ETCD=ON` 时构建。
+- **L3 shell smoke**：`simple_ha_smoke_e2e.sh` + `simple_ha_smoke_client`，
+  覆盖 kill -9 leader 后备升主、SIGSTOP/SIGCONT 冻结/恢复
+  （备升主 → 老主恢复后 merge → 再杀新主 → 老主带合并状态重新升主）。
 
 ## 待办（按优先级）
 
 ### P0
 
-- [ ] **L3：shell smoke**
-  - [ ] kill -9 leader → 备升主
-  - [ ] 端口封堵/恢复 → 重连与 merge
 - [ ] **L2 补充：supervisor 级 mid-merge 故障与反复 flap**
   - [ ] 新主在旧主 merge 中途故障 → 旧主带本地记录重新升主
-    （语义已由 L1 覆盖，缺 supervisor/etcd 级验证）
+    （L1 覆盖语义；L3 的 freeze/resume 覆盖了接近的流程）
   - [ ] 反复 flap 不出现双空
+- [ ] 把 `scripts/run_simple_ha_e2e.sh` 接入默认本地 CI / nightly
+  （目前是 opt-in 脚本，需要 Go/etcd；CI 的 etcd 作业已会自动跑 L2）
 
 ### P1
 
@@ -45,6 +47,23 @@ orphan: true
 - [ ] 确认 Simple HA 下 weight mutations 永久关闭是否可接受
 - [ ] 清理 merge 后遗留的旧 snapshot 路径/字段
 
+## 一键脚本
+
+`scripts/run_simple_ha_e2e.sh`（opt-in）串起整条链路：
+
+```bash
+./scripts/run_simple_ha_e2e.sh            # prereq → build → L1 → L2 → L3
+./scripts/run_simple_ha_e2e.sh --skip-l3  # 只跑 gtest
+./scripts/run_simple_ha_e2e.sh --build-dir build-l2 --skip-build
+```
+
+- 构建目录默认 `build-ha-e2e`，自动带
+  `STORE_USE_ETCD=ON`、`BUILD_UNIT_TESTS=ON`、
+  `MOONCAKE_ENABLE_TEST_FAILPOINTS=ON`；
+- 缺少 Go/etcd/curl 时默认 SKIP（`--strict` 则失败）；
+- 日志在 `local_test/run-simple-ha-e2e-logs/<timestamp>/`；
+- `--keep-work` 保留 L3 的临时目录和日志。
+
 ## L2 复现命令
 
 ```bash
@@ -54,6 +73,10 @@ cmake -S . -B build-l2 \
   -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/tmp/googletest-1.17.0
 cmake --build build-l2 --target simple_ha_supervisor_e2e_test -j4
 ./build-l2/mooncake-store/tests/simple_ha_supervisor_e2e_test
+
+# L3 shell smoke
+cmake --build build-l2 --target mooncake_master simple_ha_smoke_client -j4
+KEEP_WORK=1 ./mooncake-store/tests/ha/simple_ha/simple_ha_smoke_e2e.sh
 ```
 
 需要 etcd/etcdctl（`apt install etcd-server etcd-client`），以及 Go

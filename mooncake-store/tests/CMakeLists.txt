@@ -582,6 +582,26 @@ if(STORE_USE_ETCD AND TARGET mooncake_master)
            COMMAND simple_ha_supervisor_e2e_test)
   set_tests_properties(simple_ha_supervisor_e2e_test
                        PROPERTIES TIMEOUT 180)
+
+  # Small CLI used by the shell smoke under tests/ha/simple_ha.
+  add_executable(simple_ha_smoke_client
+                 ha/simple_ha/simple_ha_smoke_client.cpp
+                 ../src/master_client.cpp
+                 ../src/config/rpc_timeout_config.cpp)
+  target_include_directories(simple_ha_smoke_client
+                             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src
+                                     ${CMAKE_SOURCE_DIR}/mooncake-common/include
+                                     ${CMAKE_SOURCE_DIR}/mooncake-common/src)
+  target_link_libraries(
+    simple_ha_smoke_client
+    PRIVATE mooncake_store_master
+            cachelib_memory_allocator
+            ${ETCD_WRAPPER_LIB}
+            glog::glog
+            gflags::gflags
+            yalantinglibs::yalantinglibs
+            asio_shared
+            pthread)
 endif()
 
 foreach(

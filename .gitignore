@@ -2,6 +2,7 @@
 .vscode
 build
 build-l2/
+build-ha-e2e/
 build_ofed4
 old
 local_test
