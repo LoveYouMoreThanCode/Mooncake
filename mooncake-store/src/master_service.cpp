@@ -2096,7 +2096,7 @@ MasterService::ObjectMap::iterator MasterService::EraseMetadata(
         previous_media.insert(previous_media.end(), previous_media_hint.begin(),
                               previous_media_hint.end());
         SyncKvObjectState(key, metadata, tenant_id, previous_media);
-    } else {
+    } else if (quota_mode != QuotaEraseMode::kDrain) {
         PublishKvRemoved(key, metadata, tenant_id, previous_media_hint);
     }
 
@@ -2139,6 +2139,7 @@ MasterService::ObjectMap::iterator MasterService::EraseMetadata(
     }
     switch (quota_mode) {
         case QuotaEraseMode::kFull:
+        case QuotaEraseMode::kDrain:
             if (enable_multi_tenants_ &&
                 metadata.quota_ledger.TotalChargedBytes() != 0) {
                 auto release_result = metadata.quota_ledger.ReleaseAll(

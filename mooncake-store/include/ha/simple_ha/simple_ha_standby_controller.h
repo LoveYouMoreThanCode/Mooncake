@@ -96,6 +96,10 @@ class SimpleHaStandbyController final : public StandbyController {
     std::atomic<bool> has_lineage_{false};
     std::atomic<bool> synced_{false};
     std::atomic<bool> needs_resync_{false};
+    // True while a snapshot merge is in flight or failed partway: the pull
+    // loop keeps retrying the merge, but the records already present remain
+    // promotable.
+    std::atomic<bool> merge_incomplete_{false};
     std::atomic<bool> running_{false};
 
     std::thread loop_thread_;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <unordered_map>
 #include <utility>
 
 #include <async_simple/coro/SyncAwait.h>
@@ -77,7 +78,11 @@ ErrorCode SimpleHaStandbyController::StartStandby(
             incarnation_.clear();
         }
         preserve_baseline_ = false;
-        synced_.store(false, std::memory_order_release);
+        // The retained baseline is a consistent serving state at its cursor.
+        // A newer leader still wins: the incarnation check turns the first
+        // pull into a resync. This flag only allows re-promotion when no new
+        // leader can be reached.
+        synced_.store(true, std::memory_order_release);
         needs_resync_.store(false, std::memory_order_release);
     }
 
@@ -342,17 +347,42 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
     if (!begin) {
         return begin.error();
     }
-    if (begin->base_batch_id == 0 && begin->base_seq == 0 &&
-        (applied_batch_id_.load(std::memory_order_acquire) != 0 ||
-         applied_seq_.load(std::memory_order_acquire) != 0)) {
-        LOG(WARNING) << "Simple HA refusing to replace a non-empty standby "
-                        "with an empty leader snapshot";
-        return ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS;
-    }
 
-    auto staged_store = std::make_unique<StandbyMetadataStore>();
-    auto staged_applier = std::make_unique<OpLogApplier>(
-        staged_store.get(), config_.cluster_id);
+    // Merge semantics: entries present in the new leader's snapshot overwrite
+    // matching local keys (the leader is authoritative), while keys absent
+    // from the snapshot are kept. Snapshot absence never deletes; only an
+    // explicit REMOVE/PUT_REVOKE in the replayed WAL does.
+    //
+    // Adopt the new leader's identity and cursor up front: if this node wins
+    // an election while the merge is still running, it serves the records
+    // merged so far plus everything it already had, instead of starting empty.
+    {
+        std::lock_guard<std::mutex> incarnation_lock(incarnation_mutex_);
+        incarnation_ = begin->incarnation;
+    }
+    applied_batch_id_.store(begin->base_batch_id, std::memory_order_release);
+    applied_seq_.store(begin->base_seq, std::memory_order_release);
+    peer_durable_seq_.store(begin->base_seq, std::memory_order_release);
+    has_lineage_.store(true, std::memory_order_release);
+    needs_resync_.store(false, std::memory_order_release);
+    synced_.store(true, std::memory_order_release);
+    merge_incomplete_.store(true, std::memory_order_release);
+
+    StandbyMetadataStore* store = nullptr;
+    OpLogApplier* applier = nullptr;
+    {
+        std::lock_guard<std::mutex> store_lock(store_mutex_);
+        if (!metadata_store_) {
+            metadata_store_ = std::make_unique<StandbyMetadataStore>();
+        }
+        if (!applier_) {
+            applier_ = std::make_unique<OpLogApplier>(metadata_store_.get(),
+                                                      config_.cluster_id);
+        }
+        store = metadata_store_.get();
+        applier = applier_.get();
+    }
+    applier->Recover(begin->base_seq);
 
     uint32_t tenant_index = 0;
     uint32_t shard_index = 0;
@@ -379,8 +409,9 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
                 return ErrorCode::INCOMPLETE_OPLOG_CATCH_UP;
             }
             StandbyObjectMetadata metadata = payload.ToStandbyMetadata();
-            if (!staged_store->RestoreMetadata(entry.tenant_id, entry.key,
-                                               metadata)) {
+            // Upsert: the new leader wins on a key it still has; a rejected
+            // write is not expected for an in-memory store.
+            if (!store->PutMetadata(entry.tenant_id, entry.key, metadata)) {
                 return ErrorCode::INTERNAL_ERROR;
             }
         }
@@ -392,31 +423,33 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
         }
     }
 
-    std::vector<StandbySegmentInfo> segments;
-    segments.reserve(begin->segments.size());
+    // Union the segment registries: retained local-only objects can reference
+    // segments the new leader's snapshot does not list, while the snapshot may
+    // describe newer endpoints for the rest.
+    std::vector<StandbySegmentInfo> segments =
+        applier->GetSegmentRegistry().GetAllSegments();
+    std::unordered_map<std::string, size_t> segment_by_endpoint;
+    segment_by_endpoint.reserve(segments.size() + begin->segments.size());
+    for (size_t i = 0; i < segments.size(); ++i) {
+        segment_by_endpoint[segments[i].transport_endpoint] = i;
+    }
     for (const auto& entry : begin->segments) {
-        segments.push_back(ToStandbySegment(entry));
+        const StandbySegmentInfo segment = ToStandbySegment(entry);
+        auto it = segment_by_endpoint.find(segment.transport_endpoint);
+        if (it == segment_by_endpoint.end()) {
+            segment_by_endpoint.emplace(segment.transport_endpoint,
+                                        segments.size());
+            segments.push_back(segment);
+        } else {
+            segments[it->second] = segment;
+        }
     }
-    staged_applier->LoadSegmentRegistry(segments);
-    staged_applier->Recover(begin->base_seq);
+    applier->LoadSegmentRegistry(segments);
 
-    {
-        std::lock_guard<std::mutex> store_lock(store_mutex_);
-        metadata_store_ = std::move(staged_store);
-        applier_ = std::move(staged_applier);
-    }
-    applied_batch_id_.store(begin->base_batch_id, std::memory_order_release);
-    applied_seq_.store(begin->base_seq, std::memory_order_release);
-    peer_durable_seq_.store(begin->base_seq, std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> lock(incarnation_mutex_);
-        incarnation_ = begin->incarnation;
-    }
-    has_lineage_.store(true, std::memory_order_release);
-    needs_resync_.store(false, std::memory_order_release);
-    synced_.store(true, std::memory_order_release);
-    LOG(INFO) << "Simple HA standby snapshot loaded: base_batch="
+    merge_incomplete_.store(false, std::memory_order_release);
+    LOG(INFO) << "Simple HA standby snapshot merged: base_batch="
               << begin->base_batch_id << ", base_seq=" << begin->base_seq
+              << ", objects=" << store->GetKeyCount()
               << ", segments=" << segments.size();
     return ErrorCode::OK;
 }
@@ -446,13 +479,11 @@ ErrorCode SimpleHaStandbyController::PullOnce() {
     if (!state->has_data) {
         if (applied_batch_id_.load(std::memory_order_acquire) != 0 ||
             applied_seq_.load(std::memory_order_acquire) != 0) {
-            // An empty leader that failed to see this standby (for example
-            // across a partition) must not make us discard the only copy.
+            // Merge semantics: an empty leader never makes us discard local
+            // records. Keep them and remain promotable; if this node wins an
+            // election it serves the records it already has.
             LOG(WARNING) << "Simple HA leader reports no data while standby "
-                            "holds a non-empty cursor; refusing to resync to "
-                            "empty";
-            synced_.store(false, std::memory_order_release);
-            return ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS;
+                            "holds a non-empty cursor; keeping local records";
         }
         synced_.store(true, std::memory_order_release);
         return ErrorCode::OK;
@@ -532,14 +563,15 @@ void SimpleHaStandbyController::RunLoop() {
 
         const bool need_snapshot =
             needs_resync_.load(std::memory_order_acquire) ||
-            !has_lineage_.load(std::memory_order_acquire) || !metadata_store_;
+            !has_lineage_.load(std::memory_order_acquire) ||
+            !metadata_store_ ||
+            merge_incomplete_.load(std::memory_order_acquire);
         ErrorCode error = ErrorCode::OK;
         if (need_snapshot) {
             SetRuntimeState(MasterRuntimeState::kRecovering);
             error = LoadSnapshotFromPeer();
-            if (error != ErrorCode::OK) {
-                needs_resync_.store(true, std::memory_order_release);
-            }
+            // A failed merge leaves every record already present in place, so
+            // it must not gate promotion; the loop simply retries the merge.
         } else {
             error = PullOnce();
             if (error == ErrorCode::INCOMPLETE_OPLOG_CATCH_UP) {
@@ -597,6 +629,12 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
     if (!empty && (!synced_.load(std::memory_order_acquire) ||
                    needs_resync_.load(std::memory_order_acquire))) {
         return tl::make_unexpected(ErrorCode::INCOMPLETE_OPLOG_CATCH_UP);
+    }
+
+    if (merge_incomplete_.load(std::memory_order_acquire)) {
+        LOG(WARNING)
+            << "Simple HA promoting with an incomplete snapshot merge; "
+               "serving the records merged so far plus every local record";
     }
 
     if (empty) {
@@ -733,7 +771,10 @@ ErrorCode SimpleHaStandbyController::RestorePromotionBaseline(
     applied_seq_.store(preserved_cursor_.last_seq, std::memory_order_release);
     has_lineage_.store(true, std::memory_order_release);
     preserve_baseline_ = true;
-    synced_.store(false, std::memory_order_release);
+    // The retained baseline is a consistent state at its cursor, so it is
+    // promotable when no newer leader can be reached. If one exists, the
+    // incarnation check in PullOnce forces a resync before promotion.
+    synced_.store(true, std::memory_order_release);
     needs_resync_.store(false, std::memory_order_release);
     applier_.reset();
     {

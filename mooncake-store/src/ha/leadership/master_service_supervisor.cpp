@@ -1022,6 +1022,31 @@ int RunSupervisorLoop(const HABackendSpec& spec,
         auto err = release_term("serving");
         LOG(INFO) << "Release leadership: " << toString(err);
         auto current_view = leader_coordinator.ReadCurrentView();
+
+        // Simple HA: move the serving state into a standby baseline so losing
+        // the lease does not discard the only surviving copy. The writer is
+        // stopped above, so the map matches the durable prefix. Leadership is
+        // already released, so the O(objects) walk does not hold the term.
+        ha::PromotionContext retained_context;
+        bool has_retained_context = false;
+        if (config.enable_simple_ha && !promotion_ctx->metadata_store &&
+            !ShutdownObserved(shutdown_requested)) {
+            auto drain = wrapped_master_service->GetMasterService()
+                             .DrainIntoPromotionContext(retained_context);
+            if (drain) {
+                has_retained_context = true;
+                LOG(INFO) << "Simple HA retained serving state: objects="
+                          << retained_context.metadata_store->GetKeyCount()
+                          << ", base_batch="
+                          << retained_context.applied_cursor.batch_id
+                          << ", base_seq="
+                          << retained_context.applied_cursor.last_seq;
+            } else {
+                LOG(WARNING) << "Simple HA failed to retain serving state: "
+                             << toString(drain.error());
+            }
+        }
+
         release_service();
         if (ShutdownObserved(shutdown_requested)) {
             return shutdown_exit("standby_reentry", term_lease);
@@ -1031,13 +1056,25 @@ int RunSupervisorLoop(const HABackendSpec& spec,
         if (promotion_ctx->metadata_store) {
             return_to_standby(current_view ? current_view.value()
                                            : std::nullopt);
-        } else if (current_view) {
-            EnterStandbyMode(admin_server, *standby_controller,
-                             accept_standby_runtime_updates,
-                             current_view.value());
         } else {
-            EnterStandbyMode(admin_server, *standby_controller,
-                             accept_standby_runtime_updates, std::nullopt);
+            if (has_retained_context) {
+                const ErrorCode restore_err =
+                    standby_controller->RestorePromotionBaseline(
+                        std::move(retained_context));
+                if (restore_err != ErrorCode::OK) {
+                    LOG(ERROR) << "Failed to install retained Simple HA "
+                                  "baseline: "
+                               << toString(restore_err);
+                }
+            }
+            if (current_view) {
+                EnterStandbyMode(admin_server, *standby_controller,
+                                 accept_standby_runtime_updates,
+                                 current_view.value());
+            } else {
+                EnterStandbyMode(admin_server, *standby_controller,
+                                 accept_standby_runtime_updates, std::nullopt);
+            }
         }
     }
 

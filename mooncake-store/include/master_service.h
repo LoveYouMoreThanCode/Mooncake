@@ -79,6 +79,10 @@ class OrderedOpLogWriter;
 class SimpleHaWal;
 class SimpleHaLeaderService;
 
+namespace ha {
+struct PromotionContext;
+}  // namespace ha
+
 namespace test {
 class MasterServiceTestPeer;
 }  // namespace test
@@ -172,6 +176,14 @@ class MasterService {
     void SetBatchOpLogTerminalCallback(
         OrderedOpLogWriter::TerminalCallback callback);
     void StopBatchOpLogWriter();
+
+    // Move this service's object metadata into a standby-ready baseline
+    // without duplicating the dataset: each object is copied into the context
+    // and erased from this service before the next one is handled, so the two
+    // representations never fully coexist. The OpLog writer must be stopped
+    // first so the map matches the durable prefix. Simple HA only.
+    tl::expected<void, ErrorCode> DrainIntoPromotionContext(
+        ha::PromotionContext& context);
 
     /**
      * @brief Mount a memory segment for buffer allocation. This function is
@@ -1432,6 +1444,10 @@ class MasterService {
         kFull,
         kPreserveOld,
         kAbortOnly,
+        // Detach for retention: release quota like kFull but do not publish a
+        // KV removal event. Used when moving a serving map into a standby
+        // baseline, where clients must not observe a mass delete.
+        kDrain,
     };
     ObjectMap::iterator EraseMetadata(TenantState& tenant_state,
                                       ObjectMap::iterator it,
