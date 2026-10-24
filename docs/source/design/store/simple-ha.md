@@ -42,13 +42,13 @@ pull 响应带 first / last / incarnation；from < first、incarnation 变了、
 
 ## 04 升主
 
-> 空节点赢了也不当主：探测到对端有数据就 Resign，让位后自己同步；对端不可达时当前实现按空启动并告警（未查询 presence，见 07）。
+> 升主前无条件 probe 对端：本节点无记录而对端有记录，或同一 incarnation 下对端 applied seq 严格更大时让位；对端是 live leader 时走 best-effort WAL 追赶；探测失败时 fail-open 直接服务并告警（未查询 presence，见 07）。preserved baseline 欠 merge 时，对端若是可达 leader 就让位、让 pull loop 继续 merge；对端不可达或只是 standby 时直接用自己的 baseline 服务并记 degraded。
 
 ![升主决策流程：先关 ready；state 有效则服务；空则确认对端；对端有数据就 Resign 让位并同步](../../image/simple-ha-promotion.svg)
 
-*空节点不持有 leadership；只有 leader && ready 才接流量。空节点让位后等对端升主，再从新主同步。分区恢复：老主失去 lease 立即 ready=false；**实现现状：**term 结束时把 serving 状态 move 到 standby baseline（不复制整表），对端不可达时重新当选可以直接用自己的状态升主；发现新 leader 时把它的快照 merge 进本地 store，本地记录不释放——见下文。*
+*空节点默认让位给有数据/更新的对端；只有 leader && ready 才接流量。让位后等对端升主，再从新主同步。分区恢复：老主失去 lease 立即 ready=false；**实现现状：**term 结束时把 serving 状态 move 到 standby baseline（不复制整表），对端不可达时重新当选可以直接用自己的状态升主；发现新 leader 时把它的快照 merge 进本地 store，本地记录不释放——见下文。*
 
-term 结束的保留路径（Move-drain）：writer 已 Stop、durable callback 已 drain 之后，supervisor 调用 `DrainIntoPromotionContext()`，逐 tenant/shard 把对象构造成 `StandbyObjectMetadata` 写入新的 store，然后立刻从 master erase。同一时刻最多只有“一个对象”存在两份，峰值 ≈ 1x + 单个对象，而不是 2x。得到的 `PromotionContext` 交给已有的 `RestorePromotionBaseline()`；重新当选时按普通 standby 升主路径导出并 restore。
+term 结束的保留路径（Move-drain）：writer 已 Stop、durable callback 已 drain 之后，supervisor 调用 `DrainIntoPromotionContext()`，逐 tenant/shard 把对象构造成 `StandbyObjectMetadata` 写入新的 store，然后立刻从 master erase。drain 前先关闭本节点的 snapshot 会话（`DisableSnapshots()`），否则备可能按 drain 前的 base 合并一份被截断的快照，而 erase 掉的 key 不会出现在 base 之后的 WAL 里；`GetState`/`PullWal` 保持可用，新主仍可追冻结的 WAL 尾部。同一时刻最多只有“一个对象”存在两份，峰值 ≈ 1x + 单个对象，而不是 2x。得到的 `PromotionContext` 交给已有的 `RestorePromotionBaseline()`；重新当选时按普通 standby 升主路径导出并 restore。
 
 如果对端出现了新的 leader，节点**不释放本地 store**，而是把新主快照原地 merge 进来：
 
@@ -80,7 +80,7 @@ etcd lease TTL         ha_leader_lease_ttl_sec，默认 5s；本页预算按 4s 
 keepalive              etcd 内置 keepalive（设计目标 ~1s）
 local serve deadline   设计目标 3s / 3.2s；当前无独立开关，停服由 leadership monitor 触发
 presence               同一 session，TTL 4s（未实现）
-peer_probe_timeout     设计目标 200ms × 2；当前 connect 1s + probe RPC 1s
+peer_probe_timeout     设计目标 200ms × 2；当前 connect 1s + 升主 probe 500ms（周期 GetState 2s）
 promotion_budget       设计目标 0.5s（受 StopLoop join 影响，见遗留问题）
 client retry / LB      ≤1s（客户端侧）
 simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
@@ -93,7 +93,7 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 - **为什么 R=1s：** 备 ready ≠ 客户端能打过来。LB 检查间隔或客户端重试必须 ≤1s；如果 LB 5s 探一次，备 4.5s ready，客户端 9.5s 才恢复。
 - **crash 与分区的空窗不同：** crash 时旧进程立即没了，空窗 = T − 相位 ≈3–4s；分区时旧主在 D 停服、备在 T 上位，空窗 = T−D ≈0.8–1s。新主的启动时间都是 T+ε+P，D 只影响分区空窗和防重叠。
 - **1s pull 是另一条预算：** 它决定新主的状态最多旧 1s，不决定多久能服务。备升主时直接用当前 applied 的状态，不等旧主。
-- **presence 的做法（未实现）：** 设计上计划与 election 共用 session，TTL=4s，不额外加 keepalive。key 在但 RPC 不通 → fail-stop/重试；key 没了且 RPC 不通 → 按进程已死处理（残余风险）。当前空节点只做一次 direct RPC 探测，不可达时 fail-open 直接空启动。
+- **presence 的做法（未实现）：** 设计上计划与 election 共用 session，TTL=4s，不额外加 keepalive。key 在但 RPC 不通 → fail-stop/重试；key 没了且 RPC 不通 → 按进程已死处理（残余风险）。当前升主前对端做一次 direct RPC probe（`GetState`，超时 500ms），不可达时 fail-open 直接服务。
 
 前提：etcd quorum 健康且 keepalive p99 ≪1s；备健康、非空、不在全量 resync；LB / 客户端重试 ≤1s。etcd 撑不住 4s 时，只能放宽目标或给这套服务独立 etcd。
 
@@ -117,7 +117,7 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 | 03 | 备发现 gap 或 incarnation 变化：作废快照会话，重新 `BeginSnapshot` 并把新快照 merge 进本地 store（不换库、不释放本地记录），再从 base+1 重放 WAL。 |
 | 04 | incarnation 变了 = 对端换了一个 WAL 实例（进程重启或重新升主都会换），不能盲信索引连续。 |
 | 05 | ring 窗口要覆盖 1s pull 间隔、备短暂停机与全量扫描耗时；按峰值写速率/字节数定容，不能只按条数。 |
-| 06 | 领导权跟数据走；空节点赢了，对端有数据就 Resign（对端不可达时当前实现按空启动，见 07）。 |
+| 06 | 领导权跟数据走；升主前无条件探测对端：本节点无记录而对端有记录、或同一 incarnation 下对端严格更新时 Resign；对端是 leader 时追 WAL；不可达时 fail-open（见 07）。 |
 | 07 | snapshot / WAL 只由 leader 提供；只有 leader && ready 接流量。 |
 | 08 | 空 = 未初始化（applied=0 / 无 lineage），不是 map 没有 key。 |
 | 09 | 失去 lease 立即停服；term 结束把 serving 状态 move 到 standby baseline（边搬边删，峰值 ≈1x）；发现新 leader 时把其快照原地 merge 进本地 store，不释放、不换库。 |
@@ -161,7 +161,7 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 
 ### P1（可靠性 / 可运维性）
 
-1. **空节点 presence 检查（中风险，未实现）** —— 空节点只做一次 direct RPC 探测；对端不可达时 fail-open 直接空启动，没有按设计查询 presence key。探测响应只有一个 `has_data`，区分不了“对端空”和“对端正在全量同步”（同步完成前 `has_lineage=false`）。
+1. **presence 检查（中风险，未实现）** —— 升主前无条件 probe（`GetState`）；对端不可达时 fail-open 直接服务，没有按设计查询 presence key。standby 的探测响应带 `key_count` 和非零 lineage cursor：正在 merge、cursor 已推进但 key 还没写入的对端也会被视为有数据；leader 侧仍用 `has_data`（WAL prefix）作为“有记录”的代理。presence key 未实现，对端尚未 `BeginSnapshot` 的极短窗口仍无法区分“空”和“即将同步”。
 2. **merge 增长上限与指标（中风险）** —— 本地独有 key 会随每次 merge 单调累积；需要容量上限、`merged_extra_keys` / merge 次数 / partial-merge 升主告警，以及超限策略（停止 merge 或告警继续）。
 3. **standby lag / merge 可观测性** —— 当前只记录 degraded promotion；把 `peer_durable_seq - applied_seq` 接到 `ha_oplog_standby_lag`，并暴露 merge 是否完整，便于告警。
 4. **升主暂停时间（低风险）** —— 升主时 `StopLoop` 会 join 正在进行的 pull / snapshot chunk RPC（超时 5s / 10s），对端卡住时可能突破 P=0.5s 的预算；可考虑缩短超时或可中断的 RPC。

@@ -22,10 +22,15 @@ struct SimpleHaGetStateResponse {
     uint64_t durable_last_seq{0};
     bool has_data{false};
     bool is_leader{false};
+    // Records held locally. A serving leader does not maintain an O(1) count,
+    // so it reports 0 and callers use has_data (its WAL prefix) instead. A
+    // standby reports its store's key count, which distinguishes "holds
+    // records" from "has lineage but no records".
+    uint64_t key_count{0};
 };
 YLT_REFL(SimpleHaGetStateResponse, success, error_code, incarnation,
          first_batch_id, last_batch_id, durable_batch_id, durable_last_seq,
-         has_data, is_leader);
+         has_data, is_leader, key_count);
 
 struct SimpleHaPullWalRequest {
     uint64_t from_batch_id{1};

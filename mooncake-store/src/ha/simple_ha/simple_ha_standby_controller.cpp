@@ -19,6 +19,10 @@ namespace {
 
 using namespace std::chrono_literals;
 
+// Bound the promotion probe so an unresponsive peer cannot spend the whole
+// failover budget; a timeout fails open (serve locally) with a warning.
+constexpr std::chrono::milliseconds kPromotionProbeTimeout{500};
+
 ErrorCode MapRpcError(const coro_rpc::rpc_error& error) {
     return error.code == coro_rpc::errc::timed_out ? ErrorCode::RPC_TIMEOUT
                                                    : ErrorCode::RPC_FAIL;
@@ -104,6 +108,12 @@ ErrorCode SimpleHaStandbyController::StartStandby(
             state.applied_batch_id =
                 applied_batch_id_.load(std::memory_order_acquire);
             state.applied_seq = applied_seq_.load(std::memory_order_acquire);
+            {
+                std::lock_guard<std::mutex> lock(store_mutex_);
+                state.key_count = metadata_store_
+                                      ? metadata_store_->GetKeyCount()
+                                      : 0;
+            }
             {
                 std::lock_guard<std::mutex> lock(incarnation_mutex_);
                 state.incarnation = incarnation_;
@@ -233,13 +243,13 @@ void SimpleHaStandbyController::DropConnection() {
 }
 
 tl::expected<SimpleHaGetStateResponse, ErrorCode>
-SimpleHaStandbyController::CallGetState() {
+SimpleHaStandbyController::CallGetState(std::chrono::milliseconds timeout) {
     std::lock_guard<std::mutex> lock(client_mutex_);
     if (!connected_) {
         return tl::make_unexpected(ErrorCode::RPC_FAIL);
     }
     auto result = async_simple::coro::syncAwait(
-        client_.call_for<&SimpleHaLeaderService::GetState>(std::chrono::milliseconds(2000)));
+        client_.call_for<&SimpleHaLeaderService::GetState>(timeout));
     if (!result) {
         connected_ = false;
         client_.close();
@@ -313,25 +323,6 @@ SimpleHaStandbyController::CallSnapshotChunk(const std::string& snapshot_id,
     };
     auto result = async_simple::coro::syncAwait(
         client_.call_for<&SimpleHaLeaderService::SnapshotChunk>(std::chrono::milliseconds(10000), request));
-    if (!result) {
-        connected_ = false;
-        client_.close();
-        return tl::make_unexpected(MapRpcError(result.error()));
-    }
-    if (!result->success) {
-        return tl::make_unexpected(static_cast<ErrorCode>(result->error_code));
-    }
-    return *result;
-}
-
-tl::expected<SimpleHaProbeResponse, ErrorCode>
-SimpleHaStandbyController::CallProbe() {
-    std::lock_guard<std::mutex> lock(client_mutex_);
-    if (!connected_) {
-        return tl::make_unexpected(ErrorCode::RPC_FAIL);
-    }
-    auto result = async_simple::coro::syncAwait(
-        client_.call_for<&SimpleHaLeaderService::Probe>(std::chrono::milliseconds(1000)));
     if (!result) {
         connected_ = false;
         client_.close();
@@ -464,7 +455,12 @@ ErrorCode SimpleHaStandbyController::PullOnce() {
     if (!state) {
         return state.error();
     }
-    if (!state->is_leader) {
+    return PullOnce(*state);
+}
+
+ErrorCode SimpleHaStandbyController::PullOnce(
+    const SimpleHaGetStateResponse& state) {
+    if (!state.is_leader) {
         // The peer is a standby probe endpoint, not a WAL owner. Do not treat
         // its applied cursor as authority: that would make two standbys chase
         // each other's local state instead of waiting for a leader.
@@ -485,14 +481,14 @@ ErrorCode SimpleHaStandbyController::PullOnce() {
     {
         std::lock_guard<std::mutex> lock(incarnation_mutex_);
         if (incarnation_.empty()) {
-            incarnation_ = state->incarnation;
-        } else if (incarnation_ != state->incarnation) {
+            incarnation_ = state.incarnation;
+        } else if (incarnation_ != state.incarnation) {
             needs_resync_.store(true, std::memory_order_release);
             return ErrorCode::INCOMPLETE_OPLOG_CATCH_UP;
         }
     }
 
-    if (!state->has_data) {
+    if (!state.has_data) {
         if (applied_batch_id_.load(std::memory_order_acquire) != 0 ||
             applied_seq_.load(std::memory_order_acquire) != 0) {
             // Merge semantics: an empty leader never makes us discard local
@@ -505,7 +501,7 @@ ErrorCode SimpleHaStandbyController::PullOnce() {
         return ErrorCode::OK;
     }
 
-    if (state->first_batch_id >
+    if (state.first_batch_id >
         applied_batch_id_.load(std::memory_order_acquire) + 1) {
         needs_resync_.store(true, std::memory_order_release);
         return ErrorCode::INCOMPLETE_OPLOG_CATCH_UP;
@@ -514,14 +510,14 @@ ErrorCode SimpleHaStandbyController::PullOnce() {
     for (int page = 0; page < 16; ++page) {
         const uint64_t applied =
             applied_batch_id_.load(std::memory_order_acquire);
-        if (applied >= state->durable_batch_id) {
+        if (applied >= state.durable_batch_id) {
             break;
         }
         auto pull = CallPullWal(applied + 1, 128);
         if (!pull) {
             return pull.error();
         }
-        if (pull->incarnation != state->incarnation) {
+        if (pull->incarnation != state.incarnation) {
             needs_resync_.store(true, std::memory_order_release);
             return ErrorCode::INCOMPLETE_OPLOG_CATCH_UP;
         }
@@ -558,10 +554,10 @@ ErrorCode SimpleHaStandbyController::PullOnce() {
         }
     }
 
-    peer_durable_seq_.store(state->durable_last_seq,
+    peer_durable_seq_.store(state.durable_last_seq,
                             std::memory_order_release);
     synced_.store(applied_seq_.load(std::memory_order_acquire) >=
-                      state->durable_last_seq,
+                      state.durable_last_seq,
                   std::memory_order_release);
     return ErrorCode::OK;
 }
@@ -621,14 +617,15 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
     std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
 
     bool empty = false;
+    size_t local_key_count = 0;
     {
         std::lock_guard<std::mutex> store_lock(store_mutex_);
         if (!metadata_store_) {
             return tl::make_unexpected(ErrorCode::INCOMPLETE_OPLOG_CATCH_UP);
         }
         empty = IsEmpty();
-        if (!empty && (!synced_.load(std::memory_order_acquire) ||
-                       needs_resync_.load(std::memory_order_acquire))) {
+        local_key_count = metadata_store_->GetKeyCount();
+        if (!empty && !synced_.load(std::memory_order_acquire)) {
             // Keep the pull loop running: the node will be elected again
             // after the supervisor releases, and stopping the loop here would
             // restart a long snapshot from scratch on every attempt.
@@ -641,9 +638,9 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
     {
         std::lock_guard<std::mutex> store_lock(store_mutex_);
         empty = IsEmpty();
+        local_key_count = metadata_store_->GetKeyCount();
     }
-    if (!empty && (!synced_.load(std::memory_order_acquire) ||
-                   needs_resync_.load(std::memory_order_acquire))) {
+    if (!empty && !synced_.load(std::memory_order_acquire)) {
         return tl::make_unexpected(ErrorCode::INCOMPLETE_OPLOG_CATCH_UP);
     }
 
@@ -653,32 +650,105 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
                "serving the records merged so far plus every local record";
     }
 
-    if (empty) {
-        if (EnsureConnected()) {
-            auto probe = CallProbe();
-            if (probe && probe->has_data) {
-                LOG(INFO) << "Simple HA empty node yields leadership: peer has "
-                             "data, incarnation="
-                          << probe->incarnation;
-                return tl::make_unexpected(
-                    ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
-            }
-            if (!probe) {
-                LOG(WARNING) << "Simple HA empty promotion peer probe failed; "
-                                "starting empty";
-                HAMetricManager::instance()
-                    .inc_simple_ha_degraded_promotions();
-            }
+    // Probe the peer unconditionally. Leadership follows data: a node that
+    // would serve an older or empty state must let the fresher side win. The
+    // response is reused by the catch-up below.
+    std::optional<SimpleHaGetStateResponse> peer_state;
+    if (EnsureConnected()) {
+        auto state = CallGetState(kPromotionProbeTimeout);
+        if (state) {
+            peer_state = std::move(state.value());
         } else {
-            // A cold two-node cluster has no leader service yet. Refusing to
-            // start would deadlock both nodes. Best-effort HA accepts the
-            // empty start and logs it loudly; a partitioned peer with data is
-            // recovered only by restarting this node against that peer.
-            LOG(WARNING) << "Simple HA empty promotion cannot reach peer "
-                         << peer_host_ << ":" << peer_port_
-                         << "; starting empty";
-            HAMetricManager::instance().inc_simple_ha_degraded_promotions();
+            LOG(WARNING) << "Simple HA promotion peer probe failed: "
+                         << toString(state.error());
         }
+    } else {
+        LOG(WARNING) << "Simple HA promotion cannot reach peer "
+                     << peer_host_ << ":" << peer_port_;
+    }
+
+    if (!peer_state && empty) {
+        // A cold two-node cluster has no leader service yet. Refusing to
+        // start would deadlock both nodes. Best-effort HA accepts the empty
+        // start and logs it loudly; a partitioned peer with data is recovered
+        // only by restarting this node against that peer.
+        LOG(WARNING) << "Simple HA empty promotion cannot reach peer; "
+                        "starting empty";
+        HAMetricManager::instance().inc_simple_ha_degraded_promotions();
+    }
+
+    if (peer_state) {
+        // Let the peer serve when it holds records and this node holds none.
+        // A retained empty baseline has lineage but no records, so key count
+        // is the right signal; IsEmpty() would classify it as non-empty. A
+        // standby that is only partway through a merge has not written keys
+        // yet but already adopted the leader's non-zero cursor, so count that
+        // as records too rather than starting empty while it catches up.
+        // Only a standby reports key_count; a live leader's has_data tracks
+        // its WAL prefix.
+        const bool peer_has_records =
+            peer_state->is_leader
+                ? peer_state->has_data
+                : (peer_state->key_count > 0 ||
+                   (peer_state->has_data &&
+                    (peer_state->durable_batch_id != 0 ||
+                     peer_state->durable_last_seq != 0)));
+        if (local_key_count == 0 && peer_has_records) {
+            LOG(INFO) << "Simple HA promotion yields leadership: peer holds "
+                         "records, peer_is_leader="
+                      << peer_state->is_leader
+                      << ", incarnation=" << peer_state->incarnation;
+            return tl::make_unexpected(
+                ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+        }
+
+        // Cursors are comparable only within one WAL incarnation. A standby
+        // that is strictly ahead on the same lineage is the fresher source;
+        // across lineages neither side is provably newer, so serve locally and
+        // let the merge rules reconcile. Strict inequality keeps two nodes
+        // from yielding to each other forever.
+        std::string local_incarnation;
+        {
+            std::lock_guard<std::mutex> lock(incarnation_mutex_);
+            local_incarnation = incarnation_;
+        }
+        if (!peer_state->is_leader && !local_incarnation.empty() &&
+            peer_state->incarnation == local_incarnation &&
+            peer_state->durable_last_seq >
+                applied_seq_.load(std::memory_order_acquire)) {
+            LOG(INFO) << "Simple HA promotion yields leadership: peer is ahead "
+                         "in the same lineage, peer_seq="
+                      << peer_state->durable_last_seq
+                      << ", applied_seq="
+                      << applied_seq_.load(std::memory_order_acquire);
+            return tl::make_unexpected(
+                ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+        }
+    }
+
+    // A preserved baseline (or a merge interrupted by leadership loss) needs
+    // the leader's snapshot before its cursor can be trusted. The pull loop is
+    // stopped here, so it cannot complete that merge. If a leader is
+    // reachable, release the term and let the loop finish; if it is not (or is
+    // only a standby), the retained baseline is the newest recoverable state
+    // and serving it beats failing closed.
+    const bool state_needs_merge =
+        needs_resync_.load(std::memory_order_acquire) ||
+        merge_incomplete_.load(std::memory_order_acquire) ||
+        baseline_needs_merge_.load(std::memory_order_acquire);
+    if (peer_state && peer_state->is_leader && state_needs_merge) {
+        LOG(INFO) << "Simple HA promotion yields leadership: a reachable "
+                     "leader still has state to merge";
+        return tl::make_unexpected(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+    }
+    if (state_needs_merge) {
+        LOG(WARNING) << "Simple HA promoting with an unresolved baseline "
+                        "merge; serving the newest recoverable state, "
+                        "peer_unreachable="
+                     << (!peer_state ? 1 : 0)
+                     << ", peer_is_leader="
+                     << (peer_state && peer_state->is_leader ? 1 : 0);
+        HAMetricManager::instance().inc_simple_ha_degraded_promotions();
     }
 
     if (!applier_) {
@@ -686,17 +756,35 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
                                                   config_.cluster_id);
     }
 
-    if (!empty) {
+    if (!empty && !state_needs_merge) {
         // Best-effort final catch-up. A crashed leader is unreachable and the
         // applied state is already the newest recoverable one; a live leader
-        // lets us pull the remaining tail before exporting.
+        // lets us pull the remaining tail before exporting. The first attempt
+        // reuses the probe response; later attempts refresh it to chase a
+        // leader that keeps advancing.
         bool catch_up_failed = false;
+        std::optional<SimpleHaGetStateResponse> next_state =
+            std::move(peer_state);
         for (int attempt = 0; attempt < 4; ++attempt) {
-            if (!EnsureConnected()) {
-                catch_up_failed = true;
+            if (!next_state) {
+                if (!EnsureConnected()) {
+                    catch_up_failed = true;
+                    break;
+                }
+                auto state = CallGetState(kPromotionProbeTimeout);
+                if (!state) {
+                    catch_up_failed = true;
+                    break;
+                }
+                next_state = std::move(state.value());
+            }
+            if (!next_state->is_leader) {
+                // Only a leader owns a WAL to pull from. A standby peer was
+                // already compared above; it cannot feed the tail catch-up.
                 break;
             }
-            const ErrorCode error = PullOnce();
+            const ErrorCode error = PullOnce(*next_state);
+            next_state.reset();
             if (error == ErrorCode::INCOMPLETE_OPLOG_CATCH_UP) {
                 return tl::make_unexpected(error);
             }

@@ -31,6 +31,7 @@ class SimpleHaLeaderService {
         bool has_data{false};
         uint64_t applied_batch_id{0};
         uint64_t applied_seq{0};
+        uint64_t key_count{0};
         std::string incarnation;
     };
     using StandbyStateFn = std::function<StandbyState()>;
@@ -52,6 +53,14 @@ class SimpleHaLeaderService {
 
     bool Start();
     void Stop();
+
+    // Stop serving snapshot sessions and invalidate any in-flight one. The
+    // caller uses this when the serving map is about to be drained: a
+    // partially drained map must not be captured under the pre-drain base.
+    // GetState/PullWal stay available so a promoting standby can still catch
+    // up the frozen WAL tail. Waiters already inside a chunk finish against
+    // the pre-drain map; no chunk can observe the drain.
+    void DisableSnapshots();
 
     // RPC handlers.
     SimpleHaGetStateResponse GetState();
@@ -87,6 +96,7 @@ class SimpleHaLeaderService {
 
     std::mutex snapshot_mutex_;
     std::optional<SnapshotSession> snapshot_;
+    std::atomic<bool> snapshots_enabled_{true};
 };
 
 }  // namespace mooncake

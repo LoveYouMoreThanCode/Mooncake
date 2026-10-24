@@ -62,17 +62,20 @@ class SimpleHaStandbyController final : public StandbyController {
 
     bool EnsureConnected();
     void DropConnection();
-    tl::expected<SimpleHaGetStateResponse, ErrorCode> CallGetState();
+    tl::expected<SimpleHaGetStateResponse, ErrorCode> CallGetState(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds(2000));
     tl::expected<SimpleHaPullWalResponse, ErrorCode> CallPullWal(
         uint64_t from_batch_id, uint32_t max_batches);
     tl::expected<SimpleHaBeginSnapshotResponse, ErrorCode> CallBeginSnapshot();
     tl::expected<SimpleHaSnapshotChunkResponse, ErrorCode> CallSnapshotChunk(
         const std::string& snapshot_id, uint32_t tenant_index,
         uint32_t shard_index, uint32_t offset, uint32_t max_entries);
-    tl::expected<SimpleHaProbeResponse, ErrorCode> CallProbe();
 
     ErrorCode LoadSnapshotFromPeer();
     ErrorCode PullOnce();
+    // Applies WAL batches up to the state already fetched from the peer, so a
+    // promotion probe and its catch-up share one GetState RPC.
+    ErrorCode PullOnce(const SimpleHaGetStateResponse& state);
 
     const MasterServiceSupervisorConfig config_;
     std::string peer_host_;

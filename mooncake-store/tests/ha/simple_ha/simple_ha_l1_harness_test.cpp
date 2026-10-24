@@ -68,6 +68,13 @@ class SimpleHaStandbyControllerTestPeer {
                    transport_endpoint);
     }
 
+    // A preserved baseline clears the incarnation; tests that exercise the
+    // same-lineage cursor comparison seed it back explicitly.
+    void SetIncarnation(const std::string& incarnation) {
+        std::lock_guard<std::mutex> lock(controller_.incarnation_mutex_);
+        controller_.incarnation_ = incarnation;
+    }
+
    private:
     ha::SimpleHaStandbyController& controller_;
 };
@@ -291,6 +298,57 @@ class StandbyHarness {
     std::unique_ptr<ha::SimpleHaStandbyController> controller_;
 };
 
+// A peer that answers GetState as a standby (is_leader=false) with a fixed
+// applied state, so promotion's yield rules can be exercised without etcd.
+class StandbyPeerHarness {
+   public:
+    explicit StandbyPeerHarness(
+        SimpleHaLeaderService::StandbyState state) {
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            const uint16_t port = AllocateFreePort();
+            if (port == 0) {
+                continue;
+            }
+            service_ = std::make_unique<SimpleHaLeaderService>(
+                port, /*address=*/"127.0.0.1",
+                /*snapshot_chunk_entries=*/1, [state] { return state; });
+            if (service_->Start()) {
+                port_ = port;
+                return;
+            }
+            service_.reset();
+        }
+    }
+
+    uint16_t port() const { return port_; }
+
+   private:
+    std::unique_ptr<SimpleHaLeaderService> service_;
+    uint16_t port_{0};
+};
+
+ha::PromotionContext MakeEmptyBaseline() {
+    ha::PromotionContext context;
+    context.metadata_store = std::make_unique<StandbyMetadataStore>();
+    return context;
+}
+
+ha::PromotionContext MakeBaselineWithKey(const std::string& key,
+                                         uint64_t batch_id = 1,
+                                         uint64_t seq = 5) {
+    ha::PromotionContext context;
+    context.metadata_store = std::make_unique<StandbyMetadataStore>();
+    StandbyObjectMetadata metadata;
+    metadata.client_id = generate_uuid();
+    metadata.size = 1;
+    EXPECT_TRUE(
+        context.metadata_store->PutMetadata("default", key, metadata));
+    context.applied_seq_id = seq;
+    context.applied_cursor = DurablePrefix{.batch_id = batch_id,
+                                           .last_seq = seq};
+    return context;
+}
+
 }  // namespace
 
 TEST(SimpleHaL1HarnessTest, BaselineSurvivesUnreachablePeer) {
@@ -483,5 +541,112 @@ TEST(SimpleHaL1HarnessTest, MidMergePeerDeathKeepsLocalRecords) {
     std::filesystem::remove_all(failpoint_dir);
 }
 #endif
+
+TEST(SimpleHaL1HarnessTest, EmptyBaselineYieldsToStandbyWithRecords) {
+    // A retained empty baseline keeps has_lineage=true, so IsEmpty() alone
+    // would let this node serve empty over a peer that holds records.
+    StandbyPeerHarness peer(SimpleHaLeaderService::StandbyState{
+        .has_data = true,
+        .applied_batch_id = 7,
+        .applied_seq = 9,
+        .key_count = 5,
+        .incarnation = "peer-lineage",
+    });
+    ASSERT_NE(peer.port(), 0);
+
+    StandbyHarness standby(peer.port());
+    standby.Install(MakeEmptyBaseline());
+
+    auto promoted = standby.Promote();
+    ASSERT_FALSE(promoted.has_value());
+    EXPECT_EQ(promoted.error(), ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+}
+
+TEST(SimpleHaL1HarnessTest, EmptyBaselineYieldsToMidMergeStandby) {
+    // The peer has adopted the leader's base cursor but has not written any
+    // merged key yet. Starting empty here would make its in-flight snapshot
+    // invisible, so a non-zero lineage cursor also counts as records.
+    StandbyPeerHarness peer(SimpleHaLeaderService::StandbyState{
+        .has_data = true,
+        .applied_batch_id = 4,
+        .applied_seq = 20,
+        .key_count = 0,
+        .incarnation = "peer-lineage",
+    });
+    ASSERT_NE(peer.port(), 0);
+
+    StandbyHarness standby(peer.port());
+    standby.Install(MakeEmptyBaseline());
+
+    auto promoted = standby.Promote();
+    ASSERT_FALSE(promoted.has_value());
+    EXPECT_EQ(promoted.error(), ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+}
+
+TEST(SimpleHaL1HarnessTest, SameLineageStandbyAheadYields) {
+    StandbyPeerHarness peer(SimpleHaLeaderService::StandbyState{
+        .has_data = true,
+        .applied_batch_id = 2,
+        .applied_seq = 9,
+        .key_count = 1,
+        .incarnation = "lineage-x",
+    });
+    ASSERT_NE(peer.port(), 0);
+
+    StandbyHarness standby(peer.port());
+    standby.Install(MakeBaselineWithKey("local-key", /*batch_id=*/1,
+                                        /*seq=*/5));
+    SimpleHaStandbyControllerTestPeer(standby.controller())
+        .SetIncarnation("lineage-x");
+
+    auto promoted = standby.Promote();
+    ASSERT_FALSE(promoted.has_value());
+    EXPECT_EQ(promoted.error(), ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+}
+
+TEST(SimpleHaL1HarnessTest, SameLineageStandbyBehindServes) {
+    StandbyPeerHarness peer(SimpleHaLeaderService::StandbyState{
+        .has_data = true,
+        .applied_batch_id = 1,
+        .applied_seq = 3,
+        .key_count = 1,
+        .incarnation = "lineage-x",
+    });
+    ASSERT_NE(peer.port(), 0);
+
+    StandbyHarness standby(peer.port());
+    standby.Install(MakeBaselineWithKey("local-key", /*batch_id=*/1,
+                                        /*seq=*/5));
+    SimpleHaStandbyControllerTestPeer(standby.controller())
+        .SetIncarnation("lineage-x");
+
+    auto promoted = standby.Promote();
+    ASSERT_TRUE(promoted.has_value()) << toString(promoted.error());
+    EXPECT_EQ(promoted->applied_cursor.last_seq, 5u);
+    EXPECT_TRUE(promoted->metadata_store->Exists("default", "local-key"));
+}
+
+TEST(SimpleHaL1HarnessTest, DifferentLineageStandbyServes) {
+    // Without a shared incarnation neither cursor is authoritative; the node
+    // serves its own state and the merge rules reconcile later.
+    StandbyPeerHarness peer(SimpleHaLeaderService::StandbyState{
+        .has_data = true,
+        .applied_batch_id = 3,
+        .applied_seq = 99,
+        .key_count = 7,
+        .incarnation = "other-lineage",
+    });
+    ASSERT_NE(peer.port(), 0);
+
+    StandbyHarness standby(peer.port());
+    standby.Install(MakeBaselineWithKey("local-key", /*batch_id=*/1,
+                                        /*seq=*/5));
+    SimpleHaStandbyControllerTestPeer(standby.controller())
+        .SetIncarnation("lineage-x");
+
+    auto promoted = standby.Promote();
+    ASSERT_TRUE(promoted.has_value()) << toString(promoted.error());
+    EXPECT_EQ(promoted->applied_cursor.last_seq, 5u);
+}
 
 }  // namespace mooncake::test

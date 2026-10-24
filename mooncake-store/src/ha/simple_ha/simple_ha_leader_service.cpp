@@ -72,6 +72,16 @@ void SimpleHaLeaderService::Stop() {
     server_.stop();
 }
 
+void SimpleHaLeaderService::DisableSnapshots() {
+    // Take the same lock the chunk handlers hold for their whole body, so
+    // once this returns no scan can still be reading the serving map. From
+    // here on new sessions are rejected and the current one cannot be
+    // resumed, which keeps a draining map from being captured as a snapshot.
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    snapshots_enabled_.store(false, std::memory_order_release);
+    snapshot_.reset();
+}
+
 SimpleHaGetStateResponse SimpleHaLeaderService::MakeStateResponse(
     const SimpleHaWalState& state) {
     SimpleHaGetStateResponse response;
@@ -101,6 +111,7 @@ SimpleHaGetStateResponse SimpleHaLeaderService::GetState() {
         response.durable_last_seq = state.applied_seq;
         response.has_data = state.has_data;
         response.is_leader = false;
+        response.key_count = state.key_count;
         return response;
     }
     SimpleHaGetStateResponse response;
@@ -163,6 +174,10 @@ SimpleHaBeginSnapshotResponse SimpleHaLeaderService::BeginSnapshot() {
     }
 
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    if (!snapshots_enabled_.load(std::memory_order_acquire)) {
+        response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+        return response;
+    }
     const auto state = wal_->SnapshotState();
     // A durable-finalize callback may still be running for an entry at or
     // below the durable prefix. Wait for those callbacks so the scan cannot
@@ -206,6 +221,10 @@ SimpleHaSnapshotChunkResponse SimpleHaLeaderService::SnapshotChunk(
         return response;
     }
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    if (!snapshots_enabled_.load(std::memory_order_acquire)) {
+        response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+        return response;
+    }
     if (!snapshot_ || snapshot_->snapshot_id != request.snapshot_id) {
         response.error_code = toInt(ErrorCode::INVALID_PARAMS);
         return response;

@@ -1023,6 +1023,15 @@ int RunSupervisorLoop(const HABackendSpec& spec,
         LOG(INFO) << "Release leadership: " << toString(err);
         auto current_view = leader_coordinator.ReadCurrentView();
 
+        if (config.enable_simple_ha && simple_ha_service) {
+            // The serving map is about to be drained. Stop snapshot serving
+            // before the first object is erased: a standby must not merge a
+            // partially drained map under the pre-drain base (the erased keys
+            // never appear in the WAL after that base). Keep GetState/PullWal
+            // up so the new primary can still catch up the frozen tail.
+            simple_ha_service->DisableSnapshots();
+        }
+
         // Simple HA: move the serving state into a standby baseline so losing
         // the lease does not discard the only surviving copy. The writer is
         // stopped above, so the map matches the durable prefix. Leadership is

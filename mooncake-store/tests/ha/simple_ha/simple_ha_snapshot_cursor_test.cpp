@@ -195,6 +195,43 @@ TEST_F(SimpleHaSnapshotCursorTest, EmptySnapshotCompletesImmediately) {
     EXPECT_EQ(chunk.incarnation, begin.incarnation);
 }
 
+TEST_F(SimpleHaSnapshotCursorTest,
+       DisableSnapshotsRejectsAndInvalidatesSessions) {
+    MountSegment();
+    PutCompleted("disable_snapshots_key");
+    ASSERT_TRUE(WaitForWalLastBatch(1));
+
+    const auto begin = leader_.BeginSnapshot();
+    ASSERT_TRUE(begin.success);
+
+    // Called before the serving map is drained.
+    leader_.DisableSnapshots();
+
+    // A session that started before the drain cannot be resumed, so its
+    // consumer can never mark a truncated scan as complete.
+    SimpleHaSnapshotChunkRequest request{.snapshot_id = begin.snapshot_id};
+    const auto chunk = leader_.SnapshotChunk(request);
+    EXPECT_FALSE(chunk.success);
+    EXPECT_EQ(static_cast<ErrorCode>(chunk.error_code),
+              ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+
+    // No new snapshot may start against the draining map.
+    const auto second = leader_.BeginSnapshot();
+    EXPECT_FALSE(second.success);
+    EXPECT_EQ(static_cast<ErrorCode>(second.error_code),
+              ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
+
+    // The frozen WAL stays readable for the promoting standby's tail
+    // catch-up; only snapshot serving is disabled.
+    const auto state = leader_.GetState();
+    ASSERT_TRUE(state.success);
+    EXPECT_TRUE(state.is_leader);
+    const auto pull =
+        leader_.PullWal(SimpleHaPullWalRequest{.from_batch_id = 1});
+    ASSERT_TRUE(pull.success);
+    EXPECT_FALSE(pull.batches.empty());
+}
+
 TEST_F(SimpleHaSnapshotCursorTest, WalksEveryKeyExactlyOnce) {
     MountSegment();
     constexpr int kObjects = 24;

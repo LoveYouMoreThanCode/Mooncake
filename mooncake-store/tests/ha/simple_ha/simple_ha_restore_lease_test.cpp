@@ -76,8 +76,10 @@ LeaseObservation ObserveRestoredLeases(MasterService& service,
 }  // namespace
 
 TEST(SimpleHaRestoreLeaseTest, RestoreGrantsReadLeaseToRestoredObjects) {
-    MasterService service(
-        MasterServiceConfig::builder().set_enable_ha(false).build());
+    MasterServiceConfig config =
+        MasterServiceConfig::builder().set_enable_ha(false).build();
+    config.enable_simple_ha = true;
+    MasterService service(config);
 
     const std::string endpoint = "simple_ha_restore_lease_segment";
     const std::string plain_key = "simple_ha_restore_lease_plain";
@@ -101,6 +103,34 @@ TEST(SimpleHaRestoreLeaseTest, RestoreGrantsReadLeaseToRestoredObjects) {
     // primary. Restored objects (and their group) must not look evictable.
     EXPECT_TRUE(observation.plain_lease_active);
     EXPECT_TRUE(observation.grouped_lease_active);
+}
+
+TEST(SimpleHaRestoreLeaseTest, LegacyRestoreKeepsObjectsImmediatelyEvictable) {
+    // Only Simple HA grants a lease on restore. The batch-OpLog and legacy
+    // standby paths must keep their pre-existing behavior.
+    MasterService service(
+        MasterServiceConfig::builder().set_enable_ha(false).build());
+
+    const std::string endpoint = "simple_ha_restore_no_lease_segment";
+    const std::string plain_key = "simple_ha_restore_no_lease_plain";
+    const std::string grouped_key = "simple_ha_restore_no_lease_grouped";
+
+    auto plain = MakeStandbyObject(plain_key, endpoint, /*address=*/0);
+    auto grouped =
+        MakeStandbyObject(grouped_key, endpoint, /*address=*/4096);
+    grouped.metadata.group_id = "simple_ha_restore_no_lease_group";
+
+    ASSERT_TRUE(service
+                    .RestoreFromStandbySnapshot(
+                        {plain, grouped}, 7, {MakeStandbySegment(endpoint)})
+                    .has_value());
+
+    const auto observation =
+        ObserveRestoredLeases(service, plain_key, grouped_key);
+    EXPECT_TRUE(observation.saw_plain);
+    EXPECT_TRUE(observation.saw_grouped);
+    EXPECT_FALSE(observation.plain_lease_active);
+    EXPECT_FALSE(observation.grouped_lease_active);
 }
 
 }  // namespace mooncake::test
