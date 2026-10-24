@@ -4,6 +4,8 @@
 #include <chrono>
 #include <random>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "ha/oplog/oplog_batch_codec.h"
@@ -114,16 +116,16 @@ bool SimpleHaWal::has_data() const {
 }
 
 ErrorCode MasterService::InitializeSimpleHaWriter() {
-    if (!enable_simple_ha_) {
+    if (!simple_ha_.enable) {
         return ErrorCode::INVALID_PARAMS;
     }
     auto wal = std::make_shared<SimpleHaWal>(
-        simple_ha_wal_max_batches_, simple_ha_wal_max_bytes_,
-        initial_durable_prefix_);
+        simple_ha_.wal_max_batches, simple_ha_.wal_max_bytes,
+        simple_ha_.initial_durable_prefix);
 
     OrderedOpLogWriterConfig writer_config;
     writer_config.max_entries_per_batch = oplog_batch_max_entries_;
-    writer_config.initial_durable_prefix = initial_durable_prefix_;
+    writer_config.initial_durable_prefix = simple_ha_.initial_durable_prefix;
 
     auto writer = batch_oplog_writer_factory_(
         writer_config,
@@ -148,6 +150,15 @@ ErrorCode MasterService::InitializeSimpleHaWriter() {
     return ErrorCode::OK;
 }
 
+void MasterService::InitializeSimpleHaWriterOrThrow() {
+    const ErrorCode err = InitializeSimpleHaWriter();
+    if (err != ErrorCode::OK) {
+        throw std::runtime_error(std::string("failed to create Simple HA "
+                                             "writer: ") +
+                                 toString(err));
+    }
+}
+
 bool MasterService::WaitForSimpleHaCallbacks(
     uint64_t sequence_id, std::chrono::milliseconds timeout) {
     if (!ordered_oplog_writer_) {
@@ -158,7 +169,7 @@ bool MasterService::WaitForSimpleHaCallbacks(
 
 tl::expected<void, ErrorCode> MasterService::DrainIntoPromotionContext(
     ha::PromotionContext& context) {
-    if (!enable_simple_ha_ || !simple_ha_wal_) {
+    if (!simple_ha_.enable || !simple_ha_wal_) {
         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
     }
 

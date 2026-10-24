@@ -23,9 +23,9 @@ MasterServiceConfig MakeConfig() {
                       .set_enable_ha(true)
                       .set_oplog_batch_max_entries(1024)
                       .build();
-    config.enable_simple_ha = true;
-    config.simple_ha_wal_max_batches = 8192;
-    config.simple_ha_wal_max_bytes = 0;
+    config.simple_ha.enable = true;
+    config.simple_ha.wal_max_batches = 8192;
+    config.simple_ha.wal_max_bytes = 0;
     return config;
 }
 

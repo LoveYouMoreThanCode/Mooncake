@@ -164,16 +164,18 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 1. **presence 检查（中风险，未实现）** —— 升主前无条件 probe（`GetState`）；对端不可达时 fail-open 直接服务，没有按设计查询 presence key。standby 的探测响应带 `key_count` 和非零 lineage cursor：正在 merge、cursor 已推进但 key 还没写入的对端也会被视为有数据；leader 侧仍用 `has_data`（WAL prefix）作为“有记录”的代理。presence key 未实现，对端尚未 `BeginSnapshot` 的极短窗口仍无法区分“空”和“即将同步”。
 2. **merge 增长上限与指标（中风险）** —— 本地独有 key 会随每次 merge 单调累积；需要容量上限、`merged_extra_keys` / merge 次数 / partial-merge 升主告警，以及超限策略（停止 merge 或告警继续）。
 3. **standby lag / merge 可观测性** —— 当前只记录 degraded promotion；把 `peer_durable_seq - applied_seq` 接到 `ha_oplog_standby_lag`，并暴露 merge 是否完整，便于告警。
-4. **升主暂停时间（低风险）** —— 升主时 `StopLoop` 会 join 正在进行的 pull / snapshot chunk RPC（超时 5s / 10s），对端卡住时可能突破 P=0.5s 的预算；可考虑缩短超时或可中断的 RPC。
+4. **升主暂停时间（中风险）** —— 升主时 `StopLoop` 会 join 正在进行的 `BeginSnapshot` / `SnapshotChunk` / `PullWal` RPC（超时 5s / 10s / 5s）；对端 freeze 时 etcd lease 可能在升主完成前过期，节点被迫重新进入 standby。`RepeatedFreezeResumeKeepsData` 的 round 2 曾稳定复现这条路径：当前已用“欠 merge 的 baseline 在对端不可达时直接服务”消除阻塞，但 join 本身仍在。可考虑可中断 RPC、为升主路径单独设置更短超时，或把 snapshot 会话与 promotion 解耦；并补一个 frozen-peer + lease 到期的 e2e 断言。
 5. **客户端 / LB 切流（redirect）** —— 备不支持读，读写都走主。LB 按 ready 路由；设计目标是非主时请求返回 redirect，target 带当前 leader + epoch；leader 未 ready 返回 not-ready / retry-after。当前 master 不内联返回 redirect，依赖 LB / 客户端重试；具体错误码 / 字段待集成系统确定。
-6. **运维文档 / runbook** —— 两节点参数（`simple_ha_*`）、etcd TTL=4s 的建议、merge 语义（删除复活窗口、本地独有记录增长）、常见故障恢复步骤。
+6. **运维文档 / runbook** —— 两节点参数（`simple_ha_*`）、etcd TTL=4s 的建议、merge 语义（删除复活窗口、本地独有记录增长）、常见故障恢复步骤；`enable_simple_ha` 下对默认 `ha_leader_lease_ttl_sec=5` 打 warning（预算按 4s 计算）。
 
 ### P2（低风险 / 清理）
 
 7. **`SnapshotSegments` 防御性过滤** —— 跳过无效 endpoint / 重复 segment；merge 时过滤陈旧 segment 上不可读的 replica，避免 restore 整体失败。
 8. **weight mutations** —— Simple HA 下被强制关闭；确认是否可接受，或后续把 weight metadata 纳入快照 / OpLog。
 9. **pull / ring 容量与全量扫描重试** —— ring 仍需覆盖全量扫描耗时；备发现 gap 在进程内重装，失败按 backoff 重试，需配告警；chunk 校验和与格式版本兼容尚未做。
-10. **旧路径清理** —— 检查 `preserve_baseline_` / `preserved_segments_` 等旧分支和 merge 后不再使用的 snapshot 路径。
+10. **测试覆盖** —— 新的让位规则（空 baseline vs 有记录 / merge 中的 standby、同 lineage 落后 / 领先、不同 lineage）目前只有 L1；补 L2 用例，并覆盖 multi-tenant snapshot、大 ring / 全量扫描、重启后 rejoin。升主路径的 frozen-peer / lease 到期场景也应进 L2。
+11. **配置与地址校验** —— `simple_ha_peer_address` 的 IPv6 字面量（`[addr]:port`）解析；`enable_simple_ha` + `enable_dfs` 在 `master.cpp` 启动期显式拒绝；确认 `simple_ha_rpc_address` 的绑定语义。
+12. **旧路径清理** —— 检查 `preserve_baseline_` / `preserved_segments_` 等旧分支和 merge 后不再使用的 snapshot 路径；promotion 已改用 `GetState`，可删除 `Probe` handler / `SimpleHaProbeResponse`（若无运维用途）；删除 `observed_leader_` 死状态。
 
 ### 已接受（不做或暂不处理）
 

@@ -127,9 +127,9 @@ MasterServiceConfig MakeMasterConfig(uint64_t wal_max_batches = 8192,
                       .set_enable_ha(true)
                       .set_oplog_batch_max_entries(batch_entries)
                       .build();
-    config.enable_simple_ha = true;
-    config.simple_ha_wal_max_batches = wal_max_batches;
-    config.simple_ha_wal_max_bytes = 0;
+    config.simple_ha.enable = true;
+    config.simple_ha.wal_max_batches = wal_max_batches;
+    config.simple_ha.wal_max_bytes = 0;
     config.cluster_id = kClusterId;
     return config;
 }
@@ -137,13 +137,13 @@ MasterServiceConfig MakeMasterConfig(uint64_t wal_max_batches = 8192,
 MasterServiceSupervisorConfig MakeControllerConfig(uint16_t peer_port,
                                                    uint16_t probe_port) {
     MasterServiceSupervisorConfig config;
-    config.enable_simple_ha = true;
-    config.simple_ha_peer_address =
+    config.simple_ha.enable = true;
+    config.simple_ha.peer_address =
         "127.0.0.1:" + std::to_string(peer_port);
-    config.simple_ha_rpc_address = "127.0.0.1";
-    config.simple_ha_rpc_port = probe_port;
-    config.simple_ha_pull_interval_ms = 20;
-    config.simple_ha_snapshot_chunk_entries = 1;
+    config.simple_ha.rpc_address = "127.0.0.1";
+    config.simple_ha.rpc_port = probe_port;
+    config.simple_ha.pull_interval_ms = 20;
+    config.simple_ha.snapshot_chunk_entries = 1;
     config.cluster_id = kClusterId;
     return config;
 }

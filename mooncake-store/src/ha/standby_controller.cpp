@@ -469,7 +469,7 @@ class CapabilityDrivenStandbyController final : public StandbyController {
 std::unique_ptr<StandbyController> CreateStandbyController(
     const HABackendSpec& spec, const MasterServiceSupervisorConfig& config,
     StandbyController::StartErrorInjector start_error_injector) {
-    if (config.enable_simple_ha) {
+    if (config.simple_ha.enable) {
         return std::make_unique<SimpleHaStandbyController>(config);
     }
     const auto capabilities = BuildStandbyRuntimeCapabilities(spec, config);

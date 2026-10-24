@@ -78,7 +78,7 @@ LeaseObservation ObserveRestoredLeases(MasterService& service,
 TEST(SimpleHaRestoreLeaseTest, RestoreGrantsReadLeaseToRestoredObjects) {
     MasterServiceConfig config =
         MasterServiceConfig::builder().set_enable_ha(false).build();
-    config.enable_simple_ha = true;
+    config.simple_ha.enable = true;
     MasterService service(config);
 
     const std::string endpoint = "simple_ha_restore_lease_segment";

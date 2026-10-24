@@ -19,7 +19,7 @@ ulimit -c 0
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 MASTER_BIN="${MASTER_BIN:-${ROOT_DIR}/build-l2/mooncake-store/src/mooncake_master}"
-CLIENT_BIN="${CLIENT_BIN:-${ROOT_DIR}/build-l2/mooncake-store/tests/simple_ha_smoke_client}"
+CLIENT_BIN="${CLIENT_BIN:-${ROOT_DIR}/build-l2/mooncake-store/tests/ha/simple_ha/simple_ha_smoke_client}"
 ETCD_BIN="${ETCD_BIN:-etcd}"
 ETCDCTL_BIN="${ETCDCTL_BIN:-etcdctl}"
 BASE="${BASE:-$((24200 + ($$ % 200) * 10))}"

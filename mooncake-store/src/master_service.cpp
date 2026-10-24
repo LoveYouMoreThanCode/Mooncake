@@ -45,6 +45,7 @@
 #include "ha/kv/ha_kv_backend_factory.h"
 #include "ha/oplog/oplog_batch_storage.h"
 #include "ha/oplog/ordered_oplog_writer.h"
+#include "ha/simple_ha/simple_ha_restore.h"
 #include "types.h"
 #include "common/zstd_util.h"
 #include "common/file_util.h"
@@ -201,17 +202,14 @@ MasterService::MasterService(const MasterServiceConfig& config)
                            config.dynamic_replication_admission_qps_threshold,
                            config.dynamic_replication_max_memory_replicas),
       enable_oplog_(config.enable_ha &&
-                    (config.enable_oplog || config.enable_simple_ha) &&
+                    (config.enable_oplog || config.simple_ha.enable) &&
                     ha::HaBackendSupportsOpLog(config.ha_backend_type)),
       weight_management_mutations_enabled_(
           !enable_oplog_ ||
-          (!config.enable_simple_ha &&
+          (!config.simple_ha.enable &&
            config.weight_management_oplog_capability_confirmed)),
       oplog_batch_max_entries_(config.oplog_batch_max_entries),
-      enable_simple_ha_(config.enable_simple_ha),
-      simple_ha_wal_max_batches_(config.simple_ha_wal_max_batches),
-      simple_ha_wal_max_bytes_(config.simple_ha_wal_max_bytes),
-      initial_durable_prefix_(config.initial_durable_prefix),
+      simple_ha_(config.simple_ha),
       restore_repair_durable_timeout_ms_(
           config.restore_repair_durable_timeout_ms),
       cluster_id_(config.cluster_id),
@@ -390,12 +388,8 @@ MasterService::MasterService(const MasterServiceConfig& config)
     kv_track_tenant_epochs_ = KvEventsEnabled();
 
     if (enable_oplog_ && !cluster_id_.empty()) {
-        if (config.enable_simple_ha) {
-            const ErrorCode err = InitializeSimpleHaWriter();
-            if (err != ErrorCode::OK) {
-                throw std::runtime_error(fmt::format(
-                    "failed to create Simple HA writer: {}", toString(err)));
-            }
+        if (config.simple_ha.enable) {
+            InitializeSimpleHaWriterOrThrow();
         } else if (config.ha_backend_connstring.empty()) {
             LOG(INFO) << "Skipping automatic batch-record OpLog writer "
                          "initialization; no HA backend connstring configured";
@@ -3509,15 +3503,8 @@ tl::expected<void, ErrorCode> MasterService::PublishRestoredObjects(
             metadata.lease_ = RegisterGroupMember(
                 object.tenant_id, object.user_key, standby_meta.group_id);
         }
-        if (enable_simple_ha_) {
-            // Simple HA: a client may still be inside the read lease it
-            // received from the old primary. Grant a fresh lease to the
-            // restored object (or its shared group lease) so an eviction
-            // cannot race that in-flight read. Other HA modes keep the
-            // pre-existing behavior of restoring objects without a lease.
-            metadata.GrantReadLease(
-                std::chrono::milliseconds(default_kv_lease_ttl_));
-        }
+        MaybeGrantSimpleHaRestoreLease(simple_ha_.enable, metadata,
+                                       default_kv_lease_ttl_);
         // Counted like a LOCAL_DISK replica added, since erasing the object
         // uncounts it.
         accessor.OnDiskReplicaAdded(metadata);

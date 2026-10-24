@@ -75,6 +75,7 @@ set(MOONCAKE_STORE_MASTER_SOURCES
     ha/simple_ha/simple_ha_wal.cpp
     ha/simple_ha/simple_ha_leader_service.cpp
     ha/simple_ha/simple_ha_standby_controller.cpp
+    ha/simple_ha/simple_ha_supervisor_hooks.cpp
     ha/snapshot/batch_oplog/codec.cpp
     ha/snapshot/batch_oplog/metadata.cpp
     ha/snapshot/batch_oplog/batch_oplog_snapshot_provider.cpp
@@ -755,7 +756,8 @@ if(BUILD_SHARED_LIBS)
 endif()
 
 # Store Master executable.
-add_executable(mooncake_master master.cpp)
+add_executable(mooncake_master master.cpp
+                                ha/simple_ha/simple_ha_flags.cpp)
 set_target_properties(mooncake_master PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(mooncake_master PRIVATE ${ALLOCATOR_INCS})
 target_compile_definitions(mooncake_master PRIVATE ${ALLOCATOR_DEFS})

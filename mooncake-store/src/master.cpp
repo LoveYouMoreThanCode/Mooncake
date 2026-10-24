@@ -21,6 +21,7 @@
 #include "duration_utils.h"
 #include "ha/ha_types.h"
 #include "ha/leadership/master_service_supervisor.h"
+#include "ha/simple_ha/simple_ha_flags.h"
 #include "ha/snapshot/batch_oplog/config.h"
 
 #include "http_metadata_server.h"
@@ -400,25 +401,6 @@ DEFINE_uint32(oplog_batch_max_entries, 1024,
 DEFINE_uint32(batch_oplog_retry_timeout_sec, 180,
               "Maximum time to retry transient batch OpLog standby errors.");
 
-// Simple HA: leader-served in-memory WAL + snapshot, no etcd data plane.
-DEFINE_bool(enable_simple_ha, false,
-            "Enable Simple HA: leader-served in-memory WAL and snapshot "
-            "replication instead of etcd-stored OpLog");
-DEFINE_string(simple_ha_peer_address, "",
-              "Peer master's Simple HA RPC endpoint (host:port)");
-DEFINE_string(simple_ha_rpc_address, "0.0.0.0",
-              "Bind address for the Simple HA RPC service");
-DEFINE_uint32(simple_ha_rpc_port, 0,
-              "Port for the Simple HA RPC service (required when enabled)");
-DEFINE_int32(simple_ha_pull_interval_ms, 1000,
-             "Standby pull interval for Simple HA, in milliseconds");
-DEFINE_uint64(simple_ha_wal_max_batches, 8192,
-              "Maximum batches retained in the Simple HA in-memory WAL ring");
-DEFINE_uint64(simple_ha_wal_max_bytes, 256ULL * 1024 * 1024,
-              "Maximum encoded bytes retained in the Simple HA WAL ring");
-DEFINE_uint32(simple_ha_snapshot_chunk_entries, 1024,
-              "Maximum snapshot entries returned per Simple HA RPC chunk");
-
 DEFINE_string(memory_allocator, "offset",
               "Memory allocator for global segments, cachelib | offset");
 DEFINE_string(
@@ -725,29 +707,7 @@ void InitMasterConf(const mooncake::DefaultConfig& default_config,
     default_config.GetUInt32("batch_oplog_retry_timeout_sec",
                              &master_config.batch_oplog_retry_timeout_sec,
                              FLAGS_batch_oplog_retry_timeout_sec);
-    default_config.GetBool("enable_simple_ha", &master_config.enable_simple_ha,
-                           FLAGS_enable_simple_ha);
-    default_config.GetString("simple_ha_peer_address",
-                             &master_config.simple_ha_peer_address,
-                             FLAGS_simple_ha_peer_address);
-    default_config.GetString("simple_ha_rpc_address",
-                             &master_config.simple_ha_rpc_address,
-                             FLAGS_simple_ha_rpc_address);
-    default_config.GetUInt32("simple_ha_rpc_port",
-                             &master_config.simple_ha_rpc_port,
-                             FLAGS_simple_ha_rpc_port);
-    default_config.GetInt32("simple_ha_pull_interval_ms",
-                            &master_config.simple_ha_pull_interval_ms,
-                            FLAGS_simple_ha_pull_interval_ms);
-    default_config.GetUInt64("simple_ha_wal_max_batches",
-                             &master_config.simple_ha_wal_max_batches,
-                             FLAGS_simple_ha_wal_max_batches);
-    default_config.GetUInt64("simple_ha_wal_max_bytes",
-                             &master_config.simple_ha_wal_max_bytes,
-                             FLAGS_simple_ha_wal_max_bytes);
-    default_config.GetUInt32("simple_ha_snapshot_chunk_entries",
-                             &master_config.simple_ha_snapshot_chunk_entries,
-                             FLAGS_simple_ha_snapshot_chunk_entries);
+    InitSimpleHaConf(default_config, master_config);
     default_config.GetString("root_fs_dir", &master_config.root_fs_dir,
                              FLAGS_root_fs_dir);
     default_config.GetInt64("global_file_segment_size",
@@ -1195,50 +1155,7 @@ void LoadConfigFromCmdline(mooncake::MasterConfig& master_config,
         !conf_set) {
         master_config.enable_oplog = FLAGS_enable_oplog;
     }
-    if ((google::GetCommandLineFlagInfo("enable_simple_ha", &info) &&
-         !info.is_default) ||
-        !conf_set) {
-        master_config.enable_simple_ha = FLAGS_enable_simple_ha;
-    }
-    if ((google::GetCommandLineFlagInfo("simple_ha_peer_address", &info) &&
-         !info.is_default) ||
-        !conf_set) {
-        master_config.simple_ha_peer_address = FLAGS_simple_ha_peer_address;
-    }
-    if ((google::GetCommandLineFlagInfo("simple_ha_rpc_address", &info) &&
-         !info.is_default) ||
-        !conf_set) {
-        master_config.simple_ha_rpc_address = FLAGS_simple_ha_rpc_address;
-    }
-    if ((google::GetCommandLineFlagInfo("simple_ha_rpc_port", &info) &&
-         !info.is_default) ||
-        !conf_set) {
-        master_config.simple_ha_rpc_port = FLAGS_simple_ha_rpc_port;
-    }
-    if ((google::GetCommandLineFlagInfo("simple_ha_pull_interval_ms", &info) &&
-         !info.is_default) ||
-        !conf_set) {
-        master_config.simple_ha_pull_interval_ms =
-            FLAGS_simple_ha_pull_interval_ms;
-    }
-    if ((google::GetCommandLineFlagInfo("simple_ha_wal_max_batches", &info) &&
-         !info.is_default) ||
-        !conf_set) {
-        master_config.simple_ha_wal_max_batches =
-            FLAGS_simple_ha_wal_max_batches;
-    }
-    if ((google::GetCommandLineFlagInfo("simple_ha_wal_max_bytes", &info) &&
-         !info.is_default) ||
-        !conf_set) {
-        master_config.simple_ha_wal_max_bytes = FLAGS_simple_ha_wal_max_bytes;
-    }
-    if ((google::GetCommandLineFlagInfo("simple_ha_snapshot_chunk_entries",
-                                        &info) &&
-         !info.is_default) ||
-        !conf_set) {
-        master_config.simple_ha_snapshot_chunk_entries =
-            FLAGS_simple_ha_snapshot_chunk_entries;
-    }
+    LoadSimpleHaConfFromCmdline(master_config, conf_set);
     if ((google::GetCommandLineFlagInfo(
              "weight_management_oplog_capability_confirmed", &info) &&
          !info.is_default) ||
@@ -1584,54 +1501,7 @@ int main(int argc, char* argv[]) {
         LOG(FATAL) << "enable_oplog requires ha_backend_type=etcd or redis";
         return 1;
     }
-    if (master_config.enable_simple_ha && !master_config.enable_ha) {
-        LOG(FATAL) << "enable_simple_ha requires enable_ha=true";
-        return 1;
-    }
-    if (master_config.enable_simple_ha && master_config.enable_oplog) {
-        LOG(FATAL) << "enable_simple_ha and enable_oplog are mutually exclusive";
-        return 1;
-    }
-    if (master_config.enable_simple_ha &&
-        master_config.enable_oplog_snapshot) {
-        LOG(FATAL) << "enable_simple_ha does not use batch OpLog snapshots";
-        return 1;
-    }
-    if (master_config.enable_simple_ha &&
-        master_config.ha_backend_type != "etcd") {
-        LOG(FATAL) << "enable_simple_ha requires ha_backend_type=etcd for "
-                      "election and presence";
-        return 1;
-    }
-    if (master_config.enable_simple_ha &&
-        master_config.simple_ha_peer_address.empty()) {
-        LOG(FATAL) << "enable_simple_ha requires simple_ha_peer_address";
-        return 1;
-    }
-    if (master_config.enable_simple_ha && master_config.cluster_id.empty()) {
-        LOG(FATAL) << "enable_simple_ha requires a non-empty cluster_id";
-        return 1;
-    }
-    if (master_config.enable_simple_ha && master_config.simple_ha_rpc_port == 0) {
-        LOG(FATAL) << "enable_simple_ha requires simple_ha_rpc_port";
-        return 1;
-    }
-    if (master_config.enable_simple_ha &&
-        master_config.simple_ha_rpc_port > 65535) {
-        LOG(FATAL) << "simple_ha_rpc_port must be <= 65535";
-        return 1;
-    }
-    if (master_config.enable_simple_ha &&
-        master_config.simple_ha_rpc_port == master_config.rpc_port) {
-        LOG(FATAL) << "simple_ha_rpc_port must differ from the client rpc_port";
-        return 1;
-    }
-    if (master_config.enable_simple_ha &&
-        master_config.simple_ha_wal_max_batches == 0 &&
-        master_config.simple_ha_wal_max_bytes == 0) {
-        LOG(FATAL) << "enable_simple_ha requires a non-zero WAL budget";
-        return 1;
-    }
+    ValidateSimpleHaConfig(master_config);
     if (auto error = ValidateBatchOpLogSnapshotConfig(master_config)) {
         LOG(FATAL) << *error;
         return 1;

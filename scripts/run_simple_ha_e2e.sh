@@ -258,7 +258,7 @@ if [[ "${SKIP_L3}" == "1" ]]; then
 else
   run_l3() {
     MASTER_BIN="${BUILD_DIR}/mooncake-store/src/mooncake_master" \
-      CLIENT_BIN="${BUILD_DIR}/mooncake-store/tests/simple_ha_smoke_client" \
+      CLIENT_BIN="${BUILD_DIR}/mooncake-store/tests/ha/simple_ha/simple_ha_smoke_client" \
       KEEP_WORK="${KEEP_WORK}" \
       timeout 300 bash "${ROOT_DIR}/mooncake-store/tests/ha/simple_ha/simple_ha_smoke_e2e.sh"
   }

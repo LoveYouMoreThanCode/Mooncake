@@ -43,11 +43,11 @@ StandbySegmentInfo ToStandbySegment(const SimpleHaSegmentEntry& entry) {
 SimpleHaStandbyController::SimpleHaStandbyController(
     const MasterServiceSupervisorConfig& config)
     : config_(config) {
-    const auto& peer = config_.simple_ha_peer_address;
+    const auto& peer = config_.simple_ha.peer_address;
     const auto separator = peer.rfind(':');
     if (separator == std::string::npos) {
         peer_host_ = peer;
-        peer_port_ = std::to_string(config_.simple_ha_rpc_port);
+        peer_port_ = std::to_string(config_.simple_ha.rpc_port);
     } else {
         peer_host_ = peer.substr(0, separator);
         peer_port_ = peer.substr(separator + 1);
@@ -100,9 +100,9 @@ ErrorCode SimpleHaStandbyController::StartStandby(
     }
 
     probe_service_ = std::make_unique<SimpleHaLeaderService>(
-        static_cast<uint16_t>(config_.simple_ha_rpc_port),
-        config_.simple_ha_rpc_address,
-        config_.simple_ha_snapshot_chunk_entries, [this] {
+        static_cast<uint16_t>(config_.simple_ha.rpc_port),
+        config_.simple_ha.rpc_address,
+        config_.simple_ha.snapshot_chunk_entries, [this] {
             SimpleHaLeaderService::StandbyState state;
             state.has_data = has_lineage_.load(std::memory_order_acquire);
             state.applied_batch_id =
@@ -122,7 +122,7 @@ ErrorCode SimpleHaStandbyController::StartStandby(
         });
     if (!probe_service_->Start()) {
         LOG(ERROR) << "Simple HA standby probe service failed to start on port "
-                   << config_.simple_ha_rpc_port;
+                   << config_.simple_ha.rpc_port;
         probe_service_.reset();
         return ErrorCode::INTERNAL_ERROR;
     }
@@ -379,7 +379,7 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
     uint32_t tenant_index = 0;
     uint32_t shard_index = 0;
     uint32_t offset = 0;
-    const uint32_t chunk_entries = config_.simple_ha_snapshot_chunk_entries;
+    const uint32_t chunk_entries = config_.simple_ha.snapshot_chunk_entries;
     for (;;) {
         if (!running_.load(std::memory_order_acquire)) {
             return ErrorCode::ETCD_CTX_CANCELLED;
@@ -564,7 +564,7 @@ ErrorCode SimpleHaStandbyController::PullOnce(
 
 void SimpleHaStandbyController::RunLoop() {
     const auto base_delay =
-        std::chrono::milliseconds(std::max(config_.simple_ha_pull_interval_ms, 1));
+        std::chrono::milliseconds(std::max(config_.simple_ha.pull_interval_ms, 1));
     auto retry_delay = base_delay;
     while (running_.load(std::memory_order_acquire)) {
         if (!EnsureConnected()) {

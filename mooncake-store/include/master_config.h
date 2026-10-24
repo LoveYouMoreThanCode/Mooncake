@@ -8,8 +8,8 @@
 
 #include "config/metrics_bootstrap_config.h"
 #include "config_helper.h"
+#include "ha/simple_ha/simple_ha_config.h"
 #include "types.h"
-#include "ha/oplog/oplog_batch_types.h"
 
 namespace mooncake {
 
@@ -135,14 +135,7 @@ struct MasterConfig {
     uint32_t batch_oplog_retry_timeout_sec = 180;
 
     // Simple HA: leader-served in-memory WAL + snapshot, no etcd data plane.
-    bool enable_simple_ha = false;
-    std::string simple_ha_peer_address;
-    std::string simple_ha_rpc_address = "0.0.0.0";
-    uint32_t simple_ha_rpc_port = 0;
-    int simple_ha_pull_interval_ms = 1000;
-    uint64_t simple_ha_wal_max_batches = 8192;
-    uint64_t simple_ha_wal_max_bytes = 256ULL * 1024 * 1024;
-    uint32_t simple_ha_snapshot_chunk_entries = 1024;
+    SimpleHaConfig simple_ha;
 
     std::string cluster_id;
     std::string root_fs_dir;
@@ -281,14 +274,7 @@ class MasterServiceSupervisorConfig {
     uint32_t batch_oplog_retry_timeout_sec = 180;
     // Simple HA: leader-served in-memory WAL + snapshot. The etcd backend
     // remains the election/presence coordinator.
-    bool enable_simple_ha = false;
-    std::string simple_ha_peer_address;
-    std::string simple_ha_rpc_address = "0.0.0.0";
-    uint32_t simple_ha_rpc_port = 0;
-    int simple_ha_pull_interval_ms = 1000;
-    uint64_t simple_ha_wal_max_batches = 8192;
-    uint64_t simple_ha_wal_max_bytes = 256ULL * 1024 * 1024;
-    uint32_t simple_ha_snapshot_chunk_entries = 1024;
+    SimpleHaConfig simple_ha;
     std::string local_hostname = "0.0.0.0:50051";
     std::string cluster_id = DEFAULT_CLUSTER_ID;
     std::string root_fs_dir = DEFAULT_ROOT_FS_DIR;
@@ -428,15 +414,7 @@ class MasterServiceSupervisorConfig {
         oplog_poll_interval_ms = config.oplog_poll_interval_ms;
         oplog_batch_max_entries = config.oplog_batch_max_entries;
         batch_oplog_retry_timeout_sec = config.batch_oplog_retry_timeout_sec;
-        enable_simple_ha = config.enable_simple_ha;
-        simple_ha_peer_address = config.simple_ha_peer_address;
-        simple_ha_rpc_address = config.simple_ha_rpc_address;
-        simple_ha_rpc_port = config.simple_ha_rpc_port;
-        simple_ha_pull_interval_ms = config.simple_ha_pull_interval_ms;
-        simple_ha_wal_max_batches = config.simple_ha_wal_max_batches;
-        simple_ha_wal_max_bytes = config.simple_ha_wal_max_bytes;
-        simple_ha_snapshot_chunk_entries =
-            config.simple_ha_snapshot_chunk_entries;
+        simple_ha = config.simple_ha;
         local_hostname = rpc_address + ":" + std::to_string(rpc_port);
         cluster_id = config.cluster_id;
         root_fs_dir = config.root_fs_dir;
@@ -618,10 +596,7 @@ class WrappedMasterServiceConfig {
     uint64_t snapshot_chunk_object_count = 1000000;
     int oplog_poll_interval_ms = 1000;
     uint32_t oplog_batch_max_entries = 1024;
-    bool enable_simple_ha = false;
-    uint64_t simple_ha_wal_max_batches = 8192;
-    uint64_t simple_ha_wal_max_bytes = 256ULL * 1024 * 1024;
-    DurablePrefix initial_durable_prefix{};
+    SimpleHaConfig simple_ha;
     std::string cluster_id = DEFAULT_CLUSTER_ID;
     std::string root_fs_dir = DEFAULT_ROOT_FS_DIR;
     int64_t global_file_segment_size = DEFAULT_GLOBAL_FILE_SEGMENT_SIZE;
@@ -719,9 +694,7 @@ class WrappedMasterServiceConfig {
         snapshot_chunk_object_count = config.snapshot_chunk_object_count;
         oplog_poll_interval_ms = config.oplog_poll_interval_ms;
         oplog_batch_max_entries = config.oplog_batch_max_entries;
-        enable_simple_ha = config.enable_simple_ha;
-        simple_ha_wal_max_batches = config.simple_ha_wal_max_batches;
-        simple_ha_wal_max_bytes = config.simple_ha_wal_max_bytes;
+        simple_ha = config.simple_ha;
         cluster_id = config.cluster_id;
         root_fs_dir = config.root_fs_dir;
         global_file_segment_size = config.global_file_segment_size;
@@ -847,9 +820,7 @@ class WrappedMasterServiceConfig {
         snapshot_chunk_object_count = config.snapshot_chunk_object_count;
         oplog_poll_interval_ms = config.oplog_poll_interval_ms;
         oplog_batch_max_entries = config.oplog_batch_max_entries;
-        enable_simple_ha = config.enable_simple_ha;
-        simple_ha_wal_max_batches = config.simple_ha_wal_max_batches;
-        simple_ha_wal_max_bytes = config.simple_ha_wal_max_bytes;
+        simple_ha = config.simple_ha;
         cluster_id = config.cluster_id;
         root_fs_dir = config.root_fs_dir;
         global_file_segment_size = config.global_file_segment_size;
@@ -1287,10 +1258,7 @@ class MasterServiceConfig {
     uint64_t snapshot_chunk_object_count = 1000000;
     int oplog_poll_interval_ms = 1000;
     uint32_t oplog_batch_max_entries = 1024;
-    bool enable_simple_ha = false;
-    uint64_t simple_ha_wal_max_batches = 8192;
-    uint64_t simple_ha_wal_max_bytes = 256ULL * 1024 * 1024;
-    DurablePrefix initial_durable_prefix{};
+    SimpleHaConfig simple_ha;
     uint64_t restore_repair_durable_timeout_ms =
         DEFAULT_RESTORE_REPAIR_DURABLE_TIMEOUT_MS;
     std::string cluster_id = DEFAULT_CLUSTER_ID;
@@ -1384,10 +1352,7 @@ class MasterServiceConfig {
         snapshot_chunk_object_count = config.snapshot_chunk_object_count;
         oplog_poll_interval_ms = config.oplog_poll_interval_ms;
         oplog_batch_max_entries = config.oplog_batch_max_entries;
-        enable_simple_ha = config.enable_simple_ha;
-        simple_ha_wal_max_batches = config.simple_ha_wal_max_batches;
-        simple_ha_wal_max_bytes = config.simple_ha_wal_max_bytes;
-        initial_durable_prefix = config.initial_durable_prefix;
+        simple_ha = config.simple_ha;
         cluster_id = config.cluster_id;
         root_fs_dir = config.root_fs_dir;
         global_file_segment_size = config.global_file_segment_size;

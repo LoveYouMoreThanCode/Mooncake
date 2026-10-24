@@ -36,6 +36,7 @@
 #include "count_min_sketch.h"
 #include "deadline_scheduler.h"
 #include "dynamic_replication_controller.h"
+#include "ha/simple_ha/simple_ha_config.h"
 #include "lease.h"
 #include "master_metric_manager.h"
 #include "mutex.h"
@@ -2381,10 +2382,7 @@ class MasterService {
     const bool enable_oplog_;
     const bool weight_management_mutations_enabled_;
     const uint32_t oplog_batch_max_entries_;
-    const bool enable_simple_ha_;
-    const uint64_t simple_ha_wal_max_batches_;
-    const uint64_t simple_ha_wal_max_bytes_;
-    const DurablePrefix initial_durable_prefix_;
+    const SimpleHaConfig simple_ha_;
     const uint64_t restore_repair_durable_timeout_ms_;
 
     // cluster id for persistent sub directory
@@ -2670,6 +2668,7 @@ class MasterService {
     ErrorCode InitializeBatchOpLogWriter(std::shared_ptr<HaKvBackend> backend,
                                          bool require_fenced_writer);
     ErrorCode InitializeSimpleHaWriter();
+    void InitializeSimpleHaWriterOrThrow();
     // Blocks until every durable-finalize callback through `sequence_id` has
     // run, so a snapshot base taken at that prefix cannot miss a deferred map
     // mutation (for example an erase that happens after the OpLog is durable).
