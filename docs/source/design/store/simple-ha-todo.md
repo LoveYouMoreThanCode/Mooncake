@@ -17,8 +17,13 @@ orphan: true
   目标：`simple_ha_l1_harness_test`（mid-merge 用例需
   `MOONCAKE_ENABLE_TEST_FAILPOINTS=ON`）。
 - **L2 supervisor e2e**：自起 etcd + 两个真实 master 进程，覆盖
-  leader crash 后备升主保留数据、etcd 重启后旧主用保留状态重新升主。
-  目标：`simple_ha_supervisor_e2e_test`，仅 `STORE_USE_ETCD=ON` 时构建。
+  leader crash 后备升主保留数据、etcd 重启后旧主用保留状态重新升主、
+  **supervisor 级 mid-merge 新主故障**、**反复 freeze/resume 不丢数据**。
+  目标：`simple_ha_supervisor_e2e_test`，仅 `STORE_USE_ETCD=ON` 时构建；
+  mid-merge 用例需要 failpoints。
+- **cursor 跨任期修复**：preserved baseline 的 cursor 可能比新主靠前，
+  第一次接触 leader 时强制先 merge 快照（`baseline_needs_merge_`），
+  不能直接按数值追 WAL。
 - **L3 shell smoke**：`simple_ha_smoke_e2e.sh` + `simple_ha_smoke_client`，
   覆盖 kill -9 leader 后备升主、SIGSTOP/SIGCONT 冻结/恢复
   （备升主 → 老主恢复后 merge → 再杀新主 → 老主带合并状态重新升主）。
@@ -27,12 +32,9 @@ orphan: true
 
 ### P0
 
-- [ ] **L2 补充：supervisor 级 mid-merge 故障与反复 flap**
-  - [ ] 新主在旧主 merge 中途故障 → 旧主带本地记录重新升主
-    （L1 覆盖语义；L3 的 freeze/resume 覆盖了接近的流程）
-  - [ ] 反复 flap 不出现双空
-- [ ] 把 `scripts/run_simple_ha_e2e.sh` 接入默认本地 CI / nightly
-  （目前是 opt-in 脚本，需要 Go/etcd；CI 的 etcd 作业已会自动跑 L2）
+- [x] L2 补充场景（mid-merge 新主故障、反复 flap）已完成。
+- 编排方式已定：`scripts/run_simple_ha_e2e.sh` 手动/opt-in 运行即可，
+  不接入默认 CI；CI 的 etcd 作业仍会自动跑 L2。
 
 ### P1
 

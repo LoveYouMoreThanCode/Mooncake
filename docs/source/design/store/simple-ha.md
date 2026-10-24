@@ -58,6 +58,8 @@ term 结束的保留路径（Move-drain）：writer 已 Stop、durable callback 
 
 merge 过程中节点保持可升主：如果新主再次故障、本节点当选，它直接服务“旧记录 + 已合并的部分新记录”，不会回到空状态。代价是：新主在快照 base 之前删除、且不在重放 WAL 里的 key 会复活；本地独有记录会单调累积，需要容量上限/告警。
 
+**cursor 不能跨任期直接比较。** 降备后的 cursor 属于旧 WAL instance，可能比新主当前的 durable 还大；新主的 WAL 从它自己的 applied cursor 开始编号，两边的 batch_id / seq 是两个命名空间。如果只按数值比较，旧主会误判“已追平”，既 merge 不到新主快照，也拉不到新主后来写的低序号批次。因此 preserved baseline 第一次接触 leader 时必须先 merge 快照，把 cursor 重置到新主 lineage，之后才能按 first_batch / durable / batch_id / seq 做数值比较和 WAL 追赶。
+
 升主 restore 时，新主会给每个恢复对象统一 grant 一个 `default_kv_lease_ttl` 的读租约（组对象使用共享的组租约）。这覆盖客户端在旧主上持有的剩余租约窗口，避免新主的 eviction 与客户端仍在进行的直接读竞争。
 
 扫描完成但 WAL 尚未追平时老主故障，备会以扫描得到的混合状态升主（可用性优先）。该路径会打印 WARN（`applied_seq` / `last_known_peer_durable_seq` / `lag` / `peer_unreachable`）并累加 `ha_simple_ha_degraded_promotions_total`；缺失的尾部在此架构下不可恢复。
@@ -124,6 +126,7 @@ simple_ha_pull_interval 1000ms（--simple_ha_pull_interval_ms）
 | 12 | 全量同步期间允许以混合状态升主（可用性优先），但必须记录 degraded 指标并告警；不承诺跨 key 一致性。 |
 | 13 | term 结束用 Move-drain 保留状态：逐对象搬入 standby store 并立即 erase，同一时刻最多多一份单对象；baseline 不主动释放。 |
 | 14 | 快照 merge 规则：同 key 冲突 peer wins；快照中缺席的本地 key 保留；只有 WAL 里显式 `REMOVE` / `PUT_REVOKE` 才删除本地记录。merge 中途失败不阻塞升主。 |
+| 15 | preserved baseline 的 cursor 属于旧 WAL instance，不能和新主 cursor 直接做数值比较；第一次接触 leader 先 merge 快照重置 cursor，之后才追 WAL。 |
 
 ## 07 故障与代价
 

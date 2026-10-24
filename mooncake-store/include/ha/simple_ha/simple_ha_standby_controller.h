@@ -105,6 +105,11 @@ class SimpleHaStandbyController final : public StandbyController {
     // loop keeps retrying the merge, but the records already present remain
     // promotable.
     std::atomic<bool> merge_incomplete_{false};
+    // Set when the store came from a served term (Move-drain). The preserved
+    // cursor belongs to an older WAL instance and can be numerically ahead of
+    // the new leader's WAL, so the first contact with a leader must merge its
+    // snapshot before following the WAL.
+    std::atomic<bool> baseline_needs_merge_{false};
     std::atomic<bool> running_{false};
 
     std::thread loop_thread_;

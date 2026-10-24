@@ -80,9 +80,9 @@ ErrorCode SimpleHaStandbyController::StartStandby(
         }
         preserve_baseline_ = false;
         // The retained baseline is a consistent serving state at its cursor.
-        // A newer leader still wins: the incarnation check turns the first
-        // pull into a resync. This flag only allows re-promotion when no new
-        // leader can be reached.
+        // It still has to merge the next leader's snapshot: the cursor is
+        // from an older WAL instance and can be ahead of the new leader's.
+        baseline_needs_merge_.store(true, std::memory_order_release);
         synced_.store(true, std::memory_order_release);
         needs_resync_.store(false, std::memory_order_release);
     }
@@ -451,6 +451,7 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
     applier->LoadSegmentRegistry(segments);
 
     merge_incomplete_.store(false, std::memory_order_release);
+    baseline_needs_merge_.store(false, std::memory_order_release);
     LOG(INFO) << "Simple HA standby snapshot merged: base_batch="
               << begin->base_batch_id << ", base_seq=" << begin->base_seq
               << ", objects=" << store->GetKeyCount()
@@ -468,6 +469,17 @@ ErrorCode SimpleHaStandbyController::PullOnce() {
         // its applied cursor as authority: that would make two standbys chase
         // each other's local state instead of waiting for a leader.
         return ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS;
+    }
+
+    if (baseline_needs_merge_.load(std::memory_order_acquire)) {
+        // The preserved cursor belongs to an older WAL instance and can be
+        // numerically ahead of the new leader's WAL. Following the WAL from
+        // that cursor would silently skip the new leader's writes, so merge
+        // its snapshot first; the merge keeps every local record.
+        LOG(INFO) << "Simple HA preserved baseline: forcing a snapshot merge "
+                     "from the new leader";
+        needs_resync_.store(true, std::memory_order_release);
+        return ErrorCode::INCOMPLETE_OPLOG_CATCH_UP;
     }
 
     {
@@ -754,6 +766,8 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
     has_lineage_.store(false, std::memory_order_release);
     synced_.store(false, std::memory_order_release);
     needs_resync_.store(false, std::memory_order_release);
+    merge_incomplete_.store(false, std::memory_order_release);
+    baseline_needs_merge_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(incarnation_mutex_);
         incarnation_.clear();
@@ -775,9 +789,10 @@ ErrorCode SimpleHaStandbyController::RestorePromotionBaseline(
     applied_seq_.store(preserved_cursor_.last_seq, std::memory_order_release);
     has_lineage_.store(true, std::memory_order_release);
     preserve_baseline_ = true;
+    baseline_needs_merge_.store(true, std::memory_order_release);
     // The retained baseline is a consistent state at its cursor, so it is
     // promotable when no newer leader can be reached. If one exists, the
-    // incarnation check in PullOnce forces a resync before promotion.
+    // baseline_needs_merge gate forces a merge before following its WAL.
     synced_.store(true, std::memory_order_release);
     needs_resync_.store(false, std::memory_order_release);
     applier_.reset();

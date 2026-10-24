@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <optional>
 #include <set>
 #include <string>
@@ -170,6 +171,18 @@ bool WaitForNotServing(uint16_t admin_port,
     return false;
 }
 
+bool WaitFor(const std::function<bool()>& predicate,
+             std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(20ms);
+    }
+    return predicate();
+}
+
 class ChildProcess {
    public:
     ~ChildProcess() { Stop(); }
@@ -217,6 +230,8 @@ class ChildProcess {
         pid_ = 0;
         return false;
     }
+
+    bool Signal(int signo) { return pid_ > 0 && ::kill(pid_, signo) == 0; }
 
     void Stop() {
         if (pid_ <= 0) {
@@ -277,6 +292,12 @@ class SimpleHaSupervisorE2ETest : public ::testing::Test {
         std::filesystem::remove_all(work_dir_);
         std::filesystem::create_directories(work_dir_);
         LOG(INFO) << "L2 work dir: " << work_dir_;
+
+        // The children inherit this at exec time; the failpoint is inert
+        // until the test arms it.
+        failpoint_dir_ = work_dir_ / "failpoints";
+        std::filesystem::create_directories(failpoint_dir_);
+        ::setenv("MOONCAKE_TEST_FAILPOINT_DIR", failpoint_dir_.c_str(), 1);
 
         const auto ports = AllocatePorts(8);
         ASSERT_EQ(ports.size(), 8u);
@@ -432,39 +453,66 @@ class SimpleHaSupervisorE2ETest : public ::testing::Test {
         return true;
     }
 
-    bool KeysExist(int index, const std::vector<std::string>& keys) {
+    enum class ExistResult { kOk, kMissing, kTransient };
+
+    ExistResult TryKeysExist(int index, const std::vector<std::string>& keys,
+                             std::string* reason) {
         MasterClient client(client_id_);
         if (client.Connect(masters_[index].RpcAddress()) != ErrorCode::OK) {
-            LOG(ERROR) << "L2: connect to node " << index << " failed";
-            return false;
+            *reason = "connect failed";
+            return ExistResult::kTransient;
         }
         // A promoted standby restores segment placeholders; the owner must
         // remount before the restored replicas become readable again.
         auto remounted = client.ReMountSegment({MakeTestSegment()});
         if (!remounted.has_value()) {
-            LOG(ERROR) << "L2: remount on node " << index
-                       << " failed: " << toString(remounted.error());
-            return false;
+            *reason = "remount failed: " + std::string(toString(
+                                               remounted.error()));
+            return ExistResult::kTransient;
         }
         for (const auto& key : keys) {
             auto exists = client.ExistKey(key);
             if (!exists.has_value()) {
-                LOG(ERROR) << "L2: ExistKey(" << key << ") failed: "
-                           << toString(exists.error());
-                return false;
+                *reason = "ExistKey(" + key + ") failed: " +
+                          std::string(toString(exists.error()));
+                return ExistResult::kTransient;
             }
             if (!*exists) {
-                LOG(ERROR) << "L2: key missing on node " << index << ": "
-                           << key;
-                return false;
+                *reason = "missing key: " + key;
+                return ExistResult::kMissing;
             }
         }
-        return true;
+        return ExistResult::kOk;
+    }
+
+    bool KeysExist(int index, const std::vector<std::string>& keys) {
+        // The RPC listener can take a moment to accept connections right after
+        // activation, so retry transport errors briefly; a missing key is a
+        // real failure and is not retried.
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        std::string reason;
+        for (;;) {
+            const auto result = TryKeysExist(index, keys, &reason);
+            if (result == ExistResult::kOk) {
+                return true;
+            }
+            if (result == ExistResult::kMissing) {
+                LOG(ERROR) << "L2: node " << index << ": " << reason;
+                return false;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                LOG(ERROR) << "L2: node " << index
+                           << " remained unreachable: " << reason;
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
     }
 
     std::string etcd_bin_;
     ChildProcess etcd_process_;
     std::filesystem::path work_dir_;
+    std::filesystem::path failpoint_dir_;
     std::string cluster_id_;
     UUID client_id_{generate_uuid()};
     uint16_t etcd_client_port_{0};
@@ -505,5 +553,72 @@ TEST_F(SimpleHaSupervisorE2ETest, EtcdRestartKeepsRetainedState) {
     ASSERT_TRUE(WaitForLeader(30s));
     ASSERT_TRUE(KeysExist(leader_index_, keys));
 }
+
+TEST_F(SimpleHaSupervisorE2ETest, RepeatedFreezeResumeKeepsData) {
+    const std::vector<std::string> keys = {"l2-flap-a", "l2-flap-b"};
+    ASSERT_TRUE(PutObjects(keys));
+    std::this_thread::sleep_for(1s);
+    ASSERT_TRUE(WaitForStandby(15s));
+
+    int leader = leader_index_;
+    for (int round = 0; round < 3; ++round) {
+        ASSERT_TRUE(KeysExist(leader, keys)) << "round " << round;
+        const int next = 1 - leader;
+        ASSERT_TRUE(masters_[leader].process.Signal(SIGSTOP));
+        ASSERT_TRUE(WaitForServing(next, 30s)) << "round " << round;
+        ASSERT_TRUE(KeysExist(next, keys)) << "round " << round;
+        ASSERT_TRUE(masters_[leader].process.Signal(SIGCONT));
+        ASSERT_TRUE(WaitForHealth(masters_[leader].admin_port, "standby",
+                                  30s, /*require_ready=*/false))
+            << "round " << round;
+        leader = next;
+    }
+    ASSERT_TRUE(KeysExist(leader, keys));
+}
+
+#if defined(MOONCAKE_ENABLE_TEST_FAILPOINTS)
+TEST_F(SimpleHaSupervisorE2ETest, MidMergeNewLeaderDeathKeepsOldLeaderRecords) {
+    std::vector<std::string> keys;
+    for (int i = 0; i < 32; ++i) {
+        keys.push_back("l2-midmerge-" + std::to_string(i));
+    }
+    ASSERT_TRUE(PutObjects(keys));
+    std::this_thread::sleep_for(1s);
+    ASSERT_TRUE(WaitForStandby(15s));
+
+    const int old_leader = leader_index_;
+    const int new_leader = 1 - old_leader;
+
+    // Freeze the old leader so the standby promotes.
+    ASSERT_TRUE(masters_[old_leader].process.Signal(SIGSTOP));
+    ASSERT_TRUE(WaitForServing(new_leader, 30s));
+
+    // Arm the failpoint only now: the old leader is the only node that will
+    // merge from here on.
+    const auto arm = failpoint_dir_ / "simple_ha_snapshot_chunk_merged.arm";
+    const auto hit = failpoint_dir_ / "simple_ha_snapshot_chunk_merged.hit";
+    const auto release =
+        failpoint_dir_ / "simple_ha_snapshot_chunk_merged.release";
+    {
+        std::ofstream output(arm);
+        ASSERT_TRUE(output.good());
+    }
+
+    ASSERT_TRUE(masters_[old_leader].process.Signal(SIGCONT));
+    ASSERT_TRUE(WaitFor([&] { return std::filesystem::exists(hit); }, 30s))
+        << "old leader never reached the mid-merge failpoint";
+
+    // Kill the new leader while the old one is mid-merge, then let the merge
+    // fail and the old leader win the next election with its local records.
+    masters_[new_leader].process.Stop();
+    {
+        std::ofstream output(release);
+        ASSERT_TRUE(output.good());
+    }
+
+    ASSERT_TRUE(WaitForServing(old_leader, 30s));
+    ASSERT_TRUE(KeysExist(old_leader, keys));
+}
+#endif
 
 }  // namespace mooncake::test
