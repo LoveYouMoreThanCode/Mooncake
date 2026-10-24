@@ -25,8 +25,8 @@ void ApplySimpleHaPromotionConfig(WrappedMasterServiceConfig& wrapped_config,
 std::unique_ptr<SimpleHaLeaderService> StartSimpleHaLeaderService(
     WrappedMasterService& service, const MasterServiceSupervisorConfig& config);
 
-// Stops serving snapshot sessions while keeping GetState/PullWal available.
-void DisableSimpleHaSnapshots(SimpleHaLeaderService* service);
+// Stops serving checkpoint sessions while keeping GetState/PullWal available.
+void DisableSimpleHaCheckpoints(SimpleHaLeaderService* service);
 
 // Moves the serving state into `retained_context` when the term ends without a
 // promotion handoff. Returns true when a baseline was captured.

@@ -84,7 +84,7 @@ ErrorCode SimpleHaStandbyController::StartStandby(
         }
         preserve_baseline_ = false;
         // The retained baseline is a consistent serving state at its cursor.
-        // It still has to merge the next leader's snapshot: the cursor is
+        // It still has to merge the next leader's checkpoint: the cursor is
         // from an older WAL instance and can be ahead of the new leader's.
         baseline_needs_merge_.store(true, std::memory_order_release);
         synced_.store(true, std::memory_order_release);
@@ -102,7 +102,7 @@ ErrorCode SimpleHaStandbyController::StartStandby(
     probe_service_ = std::make_unique<SimpleHaLeaderService>(
         static_cast<uint16_t>(config_.simple_ha.rpc_port),
         config_.simple_ha.rpc_address,
-        config_.simple_ha.snapshot_chunk_entries, [this] {
+        config_.simple_ha.checkpoint_chunk_entries, [this] {
             SimpleHaLeaderService::StandbyState state;
             state.has_data = has_lineage_.load(std::memory_order_acquire);
             state.applied_batch_id =
@@ -285,14 +285,15 @@ SimpleHaStandbyController::CallPullWal(uint64_t from_batch_id,
     return *result;
 }
 
-tl::expected<SimpleHaBeginSnapshotResponse, ErrorCode>
-SimpleHaStandbyController::CallBeginSnapshot() {
+tl::expected<SimpleHaBeginCheckpointResponse, ErrorCode>
+SimpleHaStandbyController::CallBeginCheckpoint() {
     std::lock_guard<std::mutex> lock(client_mutex_);
     if (!connected_) {
         return tl::make_unexpected(ErrorCode::RPC_FAIL);
     }
     auto result = async_simple::coro::syncAwait(
-        client_.call_for<&SimpleHaLeaderService::BeginSnapshot>(std::chrono::milliseconds(5000)));
+        client_.call_for<&SimpleHaLeaderService::BeginCheckpoint>(
+            std::chrono::milliseconds(5000)));
     if (!result) {
         connected_ = false;
         client_.close();
@@ -304,8 +305,8 @@ SimpleHaStandbyController::CallBeginSnapshot() {
     return *result;
 }
 
-tl::expected<SimpleHaSnapshotChunkResponse, ErrorCode>
-SimpleHaStandbyController::CallSnapshotChunk(const std::string& snapshot_id,
+tl::expected<SimpleHaCheckpointChunkResponse, ErrorCode>
+SimpleHaStandbyController::CallCheckpointChunk(const std::string& checkpoint_id,
                                              uint32_t tenant_index,
                                              uint32_t shard_index,
                                              uint32_t offset,
@@ -314,15 +315,16 @@ SimpleHaStandbyController::CallSnapshotChunk(const std::string& snapshot_id,
     if (!connected_) {
         return tl::make_unexpected(ErrorCode::RPC_FAIL);
     }
-    SimpleHaSnapshotChunkRequest request{
-        .snapshot_id = snapshot_id,
+    SimpleHaCheckpointChunkRequest request{
+        .checkpoint_id = checkpoint_id,
         .tenant_index = tenant_index,
         .shard_index = shard_index,
         .offset = offset,
         .max_entries = max_entries,
     };
     auto result = async_simple::coro::syncAwait(
-        client_.call_for<&SimpleHaLeaderService::SnapshotChunk>(std::chrono::milliseconds(10000), request));
+        client_.call_for<&SimpleHaLeaderService::CheckpointChunk>(
+            std::chrono::milliseconds(10000), request));
     if (!result) {
         connected_ = false;
         client_.close();
@@ -334,15 +336,15 @@ SimpleHaStandbyController::CallSnapshotChunk(const std::string& snapshot_id,
     return *result;
 }
 
-ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
-    auto begin = CallBeginSnapshot();
+ErrorCode SimpleHaStandbyController::LoadCheckpointFromPeer() {
+    auto begin = CallBeginCheckpoint();
     if (!begin) {
         return begin.error();
     }
 
-    // Merge semantics: entries present in the new leader's snapshot overwrite
+    // Merge semantics: entries present in the new leader's checkpoint overwrite
     // matching local keys (the leader is authoritative), while keys absent
-    // from the snapshot are kept. Snapshot absence never deletes; only an
+    // from the checkpoint are kept. Checkpoint absence never deletes; only an
     // explicit REMOVE/PUT_REVOKE in the replayed WAL does.
     //
     // Adopt the new leader's identity and cursor up front: if this node wins
@@ -379,12 +381,12 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
     uint32_t tenant_index = 0;
     uint32_t shard_index = 0;
     uint32_t offset = 0;
-    const uint32_t chunk_entries = config_.simple_ha.snapshot_chunk_entries;
+    const uint32_t chunk_entries = config_.simple_ha.checkpoint_chunk_entries;
     for (;;) {
         if (!running_.load(std::memory_order_acquire)) {
             return ErrorCode::ETCD_CTX_CANCELLED;
         }
-        auto chunk = CallSnapshotChunk(begin->snapshot_id, tenant_index,
+        auto chunk = CallCheckpointChunk(begin->checkpoint_id, tenant_index,
                                        shard_index, offset, chunk_entries);
         if (!chunk) {
             return chunk.error();
@@ -409,7 +411,7 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
         }
         // Test-only seam for the L1 harness: stop the peer while a merge is
         // in flight. Compiled out unless MOONCAKE_ENABLE_TEST_FAILPOINTS.
-        TestFailPoint::Wait("simple_ha_snapshot_chunk_merged");
+        TestFailPoint::Wait("simple_ha_checkpoint_chunk_merged");
         tenant_index = chunk->next_tenant_index;
         shard_index = chunk->next_shard_index;
         offset = chunk->next_offset;
@@ -419,8 +421,8 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
     }
 
     // Union the segment registries: retained local-only objects can reference
-    // segments the new leader's snapshot does not list, while the snapshot may
-    // describe newer endpoints for the rest.
+    // segments the new leader's checkpoint does not list, while the
+    // checkpoint may describe newer endpoints for the rest.
     std::vector<StandbySegmentInfo> segments =
         applier->GetSegmentRegistry().GetAllSegments();
     std::unordered_map<std::string, size_t> segment_by_endpoint;
@@ -443,7 +445,7 @@ ErrorCode SimpleHaStandbyController::LoadSnapshotFromPeer() {
 
     merge_incomplete_.store(false, std::memory_order_release);
     baseline_needs_merge_.store(false, std::memory_order_release);
-    LOG(INFO) << "Simple HA standby snapshot merged: base_batch="
+    LOG(INFO) << "Simple HA standby checkpoint merged: base_batch="
               << begin->base_batch_id << ", base_seq=" << begin->base_seq
               << ", objects=" << store->GetKeyCount()
               << ", segments=" << segments.size();
@@ -471,8 +473,8 @@ ErrorCode SimpleHaStandbyController::PullOnce(
         // The preserved cursor belongs to an older WAL instance and can be
         // numerically ahead of the new leader's WAL. Following the WAL from
         // that cursor would silently skip the new leader's writes, so merge
-        // its snapshot first; the merge keeps every local record.
-        LOG(INFO) << "Simple HA preserved baseline: forcing a snapshot merge "
+        // its checkpoint first; the merge keeps every local record.
+        LOG(INFO) << "Simple HA preserved baseline: forcing a checkpoint merge "
                      "from the new leader";
         needs_resync_.store(true, std::memory_order_release);
         return ErrorCode::INCOMPLETE_OPLOG_CATCH_UP;
@@ -573,15 +575,15 @@ void SimpleHaStandbyController::RunLoop() {
             continue;
         }
 
-        const bool need_snapshot =
+        const bool need_checkpoint =
             needs_resync_.load(std::memory_order_acquire) ||
             !has_lineage_.load(std::memory_order_acquire) ||
             !metadata_store_ ||
             merge_incomplete_.load(std::memory_order_acquire);
         ErrorCode error = ErrorCode::OK;
-        if (need_snapshot) {
+        if (need_checkpoint) {
             SetRuntimeState(MasterRuntimeState::kRecovering);
-            error = LoadSnapshotFromPeer();
+            error = LoadCheckpointFromPeer();
             // A failed merge leaves every record already present in place, so
             // it must not gate promotion; the loop simply retries the merge.
         } else {
@@ -628,13 +630,13 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
         if (!empty && !synced_.load(std::memory_order_acquire)) {
             // Keep the pull loop running: the node will be elected again
             // after the supervisor releases, and stopping the loop here would
-            // restart a long snapshot from scratch on every attempt.
+            // restart a long checkpoint from scratch on every attempt.
             return tl::make_unexpected(ErrorCode::INCOMPLETE_OPLOG_CATCH_UP);
         }
     }
     StopLoop();
 
-    // The loop may have installed a snapshot or hit a gap while stopping.
+    // The loop may have installed a checkpoint or hit a gap while stopping.
     {
         std::lock_guard<std::mutex> store_lock(store_mutex_);
         empty = IsEmpty();
@@ -646,7 +648,7 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
 
     if (merge_incomplete_.load(std::memory_order_acquire)) {
         LOG(WARNING)
-            << "Simple HA promoting with an incomplete snapshot merge; "
+            << "Simple HA promoting with an incomplete checkpoint merge; "
                "serving the records merged so far plus every local record";
     }
 
@@ -727,8 +729,8 @@ SimpleHaStandbyController::PromoteStandbyAndExport() {
     }
 
     // A preserved baseline (or a merge interrupted by leadership loss) needs
-    // the leader's snapshot before its cursor can be trusted. The pull loop is
-    // stopped here, so it cannot complete that merge. If a leader is
+    // the leader's checkpoint before its cursor can be trusted. The pull loop
+    // is stopped here, so it cannot complete that merge. If a leader is
     // reachable, release the term and let the loop finish; if it is not (or is
     // only a standby), the retained baseline is the newest recoverable state
     // and serving it beats failing closed.

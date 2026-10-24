@@ -1014,7 +1014,7 @@ int RunSupervisorLoop(const HABackendSpec& spec,
         // The serving map is about to be drained, so snapshot serving must
         // stop before the first erase; GetState/PullWal stay up for the new
         // primary's tail catch-up.
-        DisableSimpleHaSnapshots(simple_ha_service.get());
+        DisableSimpleHaCheckpoints(simple_ha_service.get());
 
         // Simple HA: move the serving state into a standby baseline so losing
         // the lease does not discard the only surviving copy.

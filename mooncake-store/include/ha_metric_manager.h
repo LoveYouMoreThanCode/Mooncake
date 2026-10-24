@@ -306,7 +306,7 @@ class HAMetricManager {
     int64_t get_state_transitions_total();
 
     // Simple HA promotions that started serving without a completed WAL
-    // catch-up (the bootstrap snapshot window described in the design doc).
+    // catch-up (the bootstrap checkpoint window described in the design doc).
     void inc_simple_ha_degraded_promotions(int64_t val = 1);
     int64_t get_simple_ha_degraded_promotions_total();
 

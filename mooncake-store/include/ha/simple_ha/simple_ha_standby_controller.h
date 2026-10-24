@@ -29,7 +29,7 @@ class SimpleHaStandbyControllerTestPeer;
 
 namespace mooncake::ha {
 
-// Standby side of Simple HA. It pulls a leader-served snapshot first, then
+// Standby side of Simple HA. It pulls a leader-served checkpoint first, then
 // replays the leader's in-memory WAL ring. It never serves reads. On promotion
 // it exports the same PromotionContext the batch OpLog path uses, so the
 // supervisor's RestoreFromBatchOpLogPromotion remains unchanged.
@@ -66,12 +66,14 @@ class SimpleHaStandbyController final : public StandbyController {
         std::chrono::milliseconds timeout = std::chrono::milliseconds(2000));
     tl::expected<SimpleHaPullWalResponse, ErrorCode> CallPullWal(
         uint64_t from_batch_id, uint32_t max_batches);
-    tl::expected<SimpleHaBeginSnapshotResponse, ErrorCode> CallBeginSnapshot();
-    tl::expected<SimpleHaSnapshotChunkResponse, ErrorCode> CallSnapshotChunk(
-        const std::string& snapshot_id, uint32_t tenant_index,
-        uint32_t shard_index, uint32_t offset, uint32_t max_entries);
+    tl::expected<SimpleHaBeginCheckpointResponse, ErrorCode>
+    CallBeginCheckpoint();
+    tl::expected<SimpleHaCheckpointChunkResponse, ErrorCode>
+    CallCheckpointChunk(const std::string& checkpoint_id,
+                        uint32_t tenant_index, uint32_t shard_index,
+                        uint32_t offset, uint32_t max_entries);
 
-    ErrorCode LoadSnapshotFromPeer();
+    ErrorCode LoadCheckpointFromPeer();
     ErrorCode PullOnce();
     // Applies WAL batches up to the state already fetched from the peer, so a
     // promotion probe and its catch-up share one GetState RPC.
@@ -88,7 +90,7 @@ class SimpleHaStandbyController final : public StandbyController {
     std::unique_ptr<StandbyMetadataStore> metadata_store_;
     std::unique_ptr<OpLogApplier> applier_;
     // Protects the store/applier pointers against the promotion readiness
-    // check racing a snapshot swap in the pull loop.
+    // check racing a checkpoint swap in the pull loop.
     mutable std::mutex store_mutex_;
     // Standby-side GetState/Probe endpoint. Both roles bind the configured
     // Simple HA port, so an empty candidate can ask this node whether it holds
@@ -104,14 +106,14 @@ class SimpleHaStandbyController final : public StandbyController {
     std::atomic<bool> has_lineage_{false};
     std::atomic<bool> synced_{false};
     std::atomic<bool> needs_resync_{false};
-    // True while a snapshot merge is in flight or failed partway: the pull
+    // True while a checkpoint merge is in flight or failed partway: the pull
     // loop keeps retrying the merge, but the records already present remain
     // promotable.
     std::atomic<bool> merge_incomplete_{false};
     // Set when the store came from a served term (Move-drain). The preserved
     // cursor belongs to an older WAL instance and can be numerically ahead of
     // the new leader's WAL, so the first contact with a leader must merge its
-    // snapshot before following the WAL.
+    // checkpoint before following the WAL.
     std::atomic<bool> baseline_needs_merge_{false};
     std::atomic<bool> running_{false};
 

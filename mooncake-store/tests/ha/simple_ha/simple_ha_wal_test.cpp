@@ -51,7 +51,7 @@ constexpr size_t kUnlimited = 0;
 TEST(SimpleHaWalTest, EmptyInitialState) {
     SimpleHaWal wal(/*max_batches=*/4, /*max_bytes=*/1024, DurablePrefix{});
 
-    const auto state = wal.SnapshotState();
+    const auto state = wal.GetState();
     EXPECT_EQ(state.first_batch_id, 1u);
     EXPECT_EQ(state.last_batch_id, 0u);
     EXPECT_EQ(state.durable_prefix.batch_id, 0u);
@@ -66,7 +66,7 @@ TEST(SimpleHaWalTest, NonEmptyInitialPrefix) {
     const DurablePrefix initial{.batch_id = 7, .last_seq = 42};
     SimpleHaWal wal(/*max_batches=*/4, /*max_bytes=*/1024, initial);
 
-    const auto state = wal.SnapshotState();
+    const auto state = wal.GetState();
     EXPECT_EQ(state.first_batch_id, 8u);
     EXPECT_EQ(state.last_batch_id, 7u);
     EXPECT_EQ(state.durable_prefix, initial);
@@ -80,7 +80,7 @@ TEST(SimpleHaWalTest, NonEmptyInitialPrefix) {
               ErrorCode::INVALID_PARAMS);
     EXPECT_EQ(wal.WriteBatchAndAdvancePrefix(MakeBatchAt(8, 43, "k8"), initial),
               ErrorCode::OK);
-    const auto after_write = wal.SnapshotState();
+    const auto after_write = wal.GetState();
     EXPECT_EQ(after_write.last_batch_id, 8u);
     EXPECT_EQ(after_write.durable_prefix,
               (DurablePrefix{.batch_id = 8, .last_seq = 43}));
@@ -97,7 +97,7 @@ TEST(SimpleHaWalTest, WriteAdvancesDurablePrefix) {
     EXPECT_EQ(wal.WriteBatchAndAdvancePrefix(MakeBatch(3, "k3"), PrefixOf(2)),
               ErrorCode::OK);
 
-    const auto state = wal.SnapshotState();
+    const auto state = wal.GetState();
     EXPECT_EQ(state.first_batch_id, 1u);
     EXPECT_EQ(state.last_batch_id, 3u);
     EXPECT_EQ(state.durable_prefix.batch_id, 3u);
@@ -118,7 +118,7 @@ TEST(SimpleHaWalTest, RejectsStaleExpectedPrefix) {
     EXPECT_EQ(wal.WriteBatchAndAdvancePrefix(MakeBatch(2, "k2"), PrefixOf(2)),
               ErrorCode::INVALID_PARAMS);
 
-    const auto state = wal.SnapshotState();
+    const auto state = wal.GetState();
     EXPECT_EQ(state.first_batch_id, 1u);
     EXPECT_EQ(state.last_batch_id, 1u);
     EXPECT_EQ(state.durable_prefix, PrefixOf(1));
@@ -141,7 +141,7 @@ TEST(SimpleHaWalTest, RejectsDiscontinuousBatchOrSequence) {
               ErrorCode::INVALID_PARAMS);
 
     EXPECT_FALSE(wal.has_data());
-    EXPECT_EQ(wal.SnapshotState().last_batch_id, 0u);
+    EXPECT_EQ(wal.GetState().last_batch_id, 0u);
 }
 
 TEST(SimpleHaWalTest, PullFiltersAndLimits) {
@@ -225,7 +225,7 @@ TEST(SimpleHaWalTest, EvictsOldestByBatchCount) {
                   ErrorCode::OK);
     }
 
-    const auto state = wal.SnapshotState();
+    const auto state = wal.GetState();
     EXPECT_EQ(state.first_batch_id, 4u);
     EXPECT_EQ(state.last_batch_id, 5u);
     EXPECT_EQ(state.durable_prefix, PrefixOf(5));
@@ -250,7 +250,7 @@ TEST(SimpleHaWalTest, EvictsOldestByByteBudget) {
                   ErrorCode::OK);
     }
 
-    const auto state = wal.SnapshotState();
+    const auto state = wal.GetState();
     EXPECT_EQ(state.first_batch_id, 2u);
     EXPECT_EQ(state.last_batch_id, 3u);
     EXPECT_EQ(wal.Pull(1, 16).size(), 2u);
@@ -264,7 +264,7 @@ TEST(SimpleHaWalTest, KeepsNewestBatchEvenWhenItExceedsBudget) {
                   ErrorCode::OK);
     }
 
-    const auto state = wal.SnapshotState();
+    const auto state = wal.GetState();
     EXPECT_EQ(state.first_batch_id, 3u);
     EXPECT_EQ(state.last_batch_id, 3u);
     auto retained = wal.Pull(1, 16);
@@ -284,7 +284,7 @@ TEST(SimpleHaWalTest, ByteBudgetSpansMultipleBatches) {
         ASSERT_EQ(wal.WriteBatchAndAdvancePrefix(
                       MakeBatch(id, "k" + std::to_string(id)), PrefixOf(id - 1)),
                   ErrorCode::OK);
-        const auto state = wal.SnapshotState();
+        const auto state = wal.GetState();
         EXPECT_LE(state.last_batch_id - state.first_batch_id + 1, 2u);
     }
 }
@@ -295,7 +295,7 @@ TEST(SimpleHaWalTest, IncarnationIsStable) {
     const std::string first = wal.incarnation();
     EXPECT_FALSE(first.empty());
     EXPECT_EQ(wal.incarnation(), first);
-    EXPECT_EQ(wal.SnapshotState().incarnation, first);
+    EXPECT_EQ(wal.GetState().incarnation, first);
 }
 
 TEST(SimpleHaWalTest, ConcurrentReadersSeeConsistentState) {
@@ -306,7 +306,7 @@ TEST(SimpleHaWalTest, ConcurrentReadersSeeConsistentState) {
     std::atomic<bool> done{false};
     std::thread reader([&] {
         while (!done.load(std::memory_order_acquire)) {
-            const auto state = wal.SnapshotState();
+            const auto state = wal.GetState();
             EXPECT_LE(state.first_batch_id, state.last_batch_id + 1);
             EXPECT_EQ(state.durable_prefix.batch_id, state.last_batch_id);
 
@@ -330,7 +330,7 @@ TEST(SimpleHaWalTest, ConcurrentReadersSeeConsistentState) {
     done.store(true, std::memory_order_release);
     reader.join();
 
-    EXPECT_EQ(wal.SnapshotState().last_batch_id, kBatchCount);
+    EXPECT_EQ(wal.GetState().last_batch_id, kBatchCount);
     EXPECT_EQ(wal.Pull(1, 16).size(), 16u);
 }
 

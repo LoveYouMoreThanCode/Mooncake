@@ -33,7 +33,8 @@ std::unique_ptr<SimpleHaLeaderService> StartSimpleHaLeaderService(
     auto simple_ha_service = std::make_unique<SimpleHaLeaderService>(
         service.GetMasterService(),
         static_cast<uint16_t>(config.simple_ha.rpc_port),
-        config.simple_ha.rpc_address, config.simple_ha.snapshot_chunk_entries);
+        config.simple_ha.rpc_address,
+        config.simple_ha.checkpoint_chunk_entries);
     if (!simple_ha_service->Start()) {
         LOG(ERROR) << "Failed to start Simple HA RPC service";
         return nullptr;
@@ -41,9 +42,9 @@ std::unique_ptr<SimpleHaLeaderService> StartSimpleHaLeaderService(
     return simple_ha_service;
 }
 
-void DisableSimpleHaSnapshots(SimpleHaLeaderService* service) {
+void DisableSimpleHaCheckpoints(SimpleHaLeaderService* service) {
     if (service) {
-        service->DisableSnapshots();
+        service->DisableCheckpoints();
     }
 }
 

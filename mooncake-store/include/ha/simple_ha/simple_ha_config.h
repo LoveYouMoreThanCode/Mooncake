@@ -18,7 +18,7 @@ struct SimpleHaConfig {
     int pull_interval_ms = 1000;
     uint64_t wal_max_batches = 8192;
     uint64_t wal_max_bytes = 256ULL * 1024 * 1024;
-    uint32_t snapshot_chunk_entries = 1024;
+    uint32_t checkpoint_chunk_entries = 1024;
     // Seeds the first WAL instance when a promoted standby is restored.
     DurablePrefix initial_durable_prefix{};
 };

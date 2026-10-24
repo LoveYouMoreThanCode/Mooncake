@@ -25,8 +25,8 @@ add_ha_core_test(simple_ha_wal_test simple_ha_wal_test.cpp)
 add_ha_core_test(simple_ha_callback_barrier_test
                  simple_ha_callback_barrier_test.cpp)
 add_ha_core_test(simple_ha_restore_lease_test simple_ha_restore_lease_test.cpp)
-add_ha_core_test(simple_ha_snapshot_cursor_test
-                 simple_ha_snapshot_cursor_test.cpp)
+add_ha_core_test(simple_ha_checkpoint_cursor_test
+                 simple_ha_checkpoint_cursor_test.cpp)
 add_ha_core_test(simple_ha_drain_test simple_ha_drain_test.cpp)
 add_ha_core_test(simple_ha_l1_harness_test simple_ha_l1_harness_test.cpp)
 

@@ -143,7 +143,7 @@ MasterServiceSupervisorConfig MakeControllerConfig(uint16_t peer_port,
     config.simple_ha.rpc_address = "127.0.0.1";
     config.simple_ha.rpc_port = probe_port;
     config.simple_ha.pull_interval_ms = 20;
-    config.simple_ha.snapshot_chunk_entries = 1;
+    config.simple_ha.checkpoint_chunk_entries = 1;
     config.cluster_id = kClusterId;
     return config;
 }
@@ -172,7 +172,7 @@ bool HasSegmentEndpoint(const std::vector<StandbySegmentInfo>& segments,
 class LeaderHarness {
    public:
     // A small WAL ring makes the peer's first_batch_id jump ahead of the
-    // local baseline, which forces the controller into a snapshot merge
+    // local baseline, which forces the controller into a checkpoint merge
     // instead of an incremental WAL catch-up.
     explicit LeaderHarness(uint64_t wal_max_batches = 8192,
                            uint32_t batch_entries = 1024)
@@ -233,7 +233,7 @@ class LeaderHarness {
             }
             service_ = std::make_unique<SimpleHaLeaderService>(
                 master_, port, /*address=*/"127.0.0.1",
-                /*snapshot_chunk_entries=*/1);
+                /*checkpoint_chunk_entries=*/1);
             if (service_->Start()) {
                 port_ = port;
                 return true;
@@ -311,7 +311,7 @@ class StandbyPeerHarness {
             }
             service_ = std::make_unique<SimpleHaLeaderService>(
                 port, /*address=*/"127.0.0.1",
-                /*snapshot_chunk_entries=*/1, [state] { return state; });
+                /*checkpoint_chunk_entries=*/1, [state] { return state; });
             if (service_->Start()) {
                 port_ = port;
                 return;
@@ -462,7 +462,7 @@ TEST(SimpleHaL1HarnessTest, WalSegmentOpsReachPromotion) {
     }));
 
     // Mounted after the standby's baseline, so this segment reaches the
-    // standby through WAL replay instead of the snapshot's segment list.
+    // standby through WAL replay instead of the checkpoint's segment list.
     peer.Mount("l1-keep-segment", kSegmentBase + kSegmentSize);
     peer.PutCompleted("keep-alive", "l1-keep-segment");
     ASSERT_TRUE(WaitFor([&] {
@@ -511,10 +511,10 @@ TEST(SimpleHaL1HarnessTest, MidMergePeerDeathKeepsLocalRecords) {
     ASSERT_EQ(::setenv("MOONCAKE_TEST_FAILPOINT_DIR",
                        failpoint_dir.c_str(), 1),
               0);
-    const auto arm = failpoint_dir / "simple_ha_snapshot_chunk_merged.arm";
-    const auto hit = failpoint_dir / "simple_ha_snapshot_chunk_merged.hit";
+    const auto arm = failpoint_dir / "simple_ha_checkpoint_chunk_merged.arm";
+    const auto hit = failpoint_dir / "simple_ha_checkpoint_chunk_merged.hit";
     const auto release =
-        failpoint_dir / "simple_ha_snapshot_chunk_merged.release";
+        failpoint_dir / "simple_ha_checkpoint_chunk_merged.release";
     {
         std::ofstream output(arm);
         ASSERT_TRUE(output.good());
@@ -564,7 +564,7 @@ TEST(SimpleHaL1HarnessTest, EmptyBaselineYieldsToStandbyWithRecords) {
 
 TEST(SimpleHaL1HarnessTest, EmptyBaselineYieldsToMidMergeStandby) {
     // The peer has adopted the leader's base cursor but has not written any
-    // merged key yet. Starting empty here would make its in-flight snapshot
+    // merged key yet. Starting empty here would make its in-flight checkpoint
     // invisible, so a non-zero lineage cursor also counts as records.
     StandbyPeerHarness peer(SimpleHaLeaderService::StandbyState{
         .has_data = true,

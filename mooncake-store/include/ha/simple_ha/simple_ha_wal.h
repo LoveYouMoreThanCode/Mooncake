@@ -24,7 +24,7 @@ struct SimpleHaWalState {
 // instead of to etcd; a standby pulls them over the leader's RPC service.
 // Capacity is bounded by both batch count and encoded bytes. Evicting the
 // oldest batch advances first_batch_id; a standby that is behind first_batch_id
-// must full-resync from a snapshot.
+// must full-resync from a checkpoint.
 class SimpleHaWal {
    public:
     SimpleHaWal(size_t max_batches, size_t max_bytes,
@@ -37,12 +37,12 @@ class SimpleHaWal {
                                          const DurablePrefix& expected_prefix);
 
     // Batches with batch_id >= from_batch_id, in ascending order, at most
-    // `max_batches`. The response must be read together with SnapshotState():
+    // `max_batches`. The response must be read together with GetState():
     // if `from_batch_id < first_batch_id`, batches were overwritten.
     std::vector<OpLogBatchRecord> Pull(uint64_t from_batch_id,
                                        size_t max_batches) const;
 
-    SimpleHaWalState SnapshotState() const;
+    SimpleHaWalState GetState() const;
     std::string incarnation() const;
     bool has_data() const;
 

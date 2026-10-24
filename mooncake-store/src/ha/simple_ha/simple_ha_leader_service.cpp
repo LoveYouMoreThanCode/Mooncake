@@ -13,22 +13,22 @@ namespace mooncake {
 
 SimpleHaLeaderService::SimpleHaLeaderService(
     MasterService& master, uint16_t port, std::string address,
-    uint32_t snapshot_chunk_entries)
+    uint32_t checkpoint_chunk_entries)
     : master_(&master),
       wal_(master.simple_ha_wal_),
-      snapshot_chunk_entries_(snapshot_chunk_entries == 0
+      checkpoint_chunk_entries_(checkpoint_chunk_entries == 0
                                   ? 1024
-                                  : snapshot_chunk_entries),
+                                  : checkpoint_chunk_entries),
       server_(/*thread_num=*/4, port, std::move(address),
               std::chrono::seconds(0), /*tcp_no_delay=*/true) {}
 
 SimpleHaLeaderService::SimpleHaLeaderService(uint16_t port, std::string address,
-                                             uint32_t snapshot_chunk_entries,
+                                             uint32_t checkpoint_chunk_entries,
                                              StandbyStateFn standby_state)
     : standby_state_fn_(std::move(standby_state)),
-      snapshot_chunk_entries_(snapshot_chunk_entries == 0
+      checkpoint_chunk_entries_(checkpoint_chunk_entries == 0
                                   ? 1024
-                                  : snapshot_chunk_entries),
+                                  : checkpoint_chunk_entries),
       server_(/*thread_num=*/4, port, std::move(address),
               std::chrono::seconds(0), /*tcp_no_delay=*/true) {}
 
@@ -47,8 +47,8 @@ bool SimpleHaLeaderService::Start() {
 
     server_.register_handler<&SimpleHaLeaderService::GetState,
                              &SimpleHaLeaderService::PullWal,
-                             &SimpleHaLeaderService::BeginSnapshot,
-                             &SimpleHaLeaderService::SnapshotChunk,
+                             &SimpleHaLeaderService::BeginCheckpoint,
+                             &SimpleHaLeaderService::CheckpointChunk,
                              &SimpleHaLeaderService::Probe>(this);
 
     auto future = server_.async_start();
@@ -72,14 +72,14 @@ void SimpleHaLeaderService::Stop() {
     server_.stop();
 }
 
-void SimpleHaLeaderService::DisableSnapshots() {
+void SimpleHaLeaderService::DisableCheckpoints() {
     // Take the same lock the chunk handlers hold for their whole body, so
     // once this returns no scan can still be reading the serving map. From
     // here on new sessions are rejected and the current one cannot be
-    // resumed, which keeps a draining map from being captured as a snapshot.
-    std::lock_guard<std::mutex> lock(snapshot_mutex_);
-    snapshots_enabled_.store(false, std::memory_order_release);
-    snapshot_.reset();
+    // resumed, which keeps a draining map from being captured as a checkpoint.
+    std::lock_guard<std::mutex> lock(checkpoint_mutex_);
+    checkpoints_enabled_.store(false, std::memory_order_release);
+    checkpoint_.reset();
 }
 
 SimpleHaGetStateResponse SimpleHaLeaderService::MakeStateResponse(
@@ -98,7 +98,7 @@ SimpleHaGetStateResponse SimpleHaLeaderService::MakeStateResponse(
 
 SimpleHaGetStateResponse SimpleHaLeaderService::GetState() {
     if (wal_) {
-        return MakeStateResponse(wal_->SnapshotState());
+        return MakeStateResponse(wal_->GetState());
     }
     if (standby_state_fn_) {
         const auto state = standby_state_fn_();
@@ -129,7 +129,7 @@ SimpleHaPullWalResponse SimpleHaLeaderService::PullWal(
     const size_t max_batches =
         std::min<size_t>(request.max_batches == 0 ? 64 : request.max_batches,
                          1024);
-    const auto state = wal_->SnapshotState();
+    const auto state = wal_->GetState();
     response.success = true;
     response.incarnation = state.incarnation;
     response.first_batch_id = state.first_batch_id;
@@ -143,13 +143,13 @@ SimpleHaPullWalResponse SimpleHaLeaderService::PullWal(
     return response;
 }
 
-std::vector<SimpleHaSegmentEntry> SimpleHaLeaderService::SnapshotSegments()
+std::vector<SimpleHaSegmentEntry> SimpleHaLeaderService::CheckpointSegments()
     const {
     std::vector<SimpleHaSegmentEntry> result;
     std::vector<std::pair<Segment, UUID>> segments;
     if (master_->segment_manager_.getSegmentAccess().GetAllSegments(segments) !=
         ErrorCode::OK) {
-        LOG(WARNING) << "Simple HA snapshot could not enumerate segments";
+        LOG(WARNING) << "Simple HA checkpoint could not enumerate segments";
         return result;
     }
     result.reserve(segments.size());
@@ -166,19 +166,19 @@ std::vector<SimpleHaSegmentEntry> SimpleHaLeaderService::SnapshotSegments()
     return result;
 }
 
-SimpleHaBeginSnapshotResponse SimpleHaLeaderService::BeginSnapshot() {
-    SimpleHaBeginSnapshotResponse response;
+SimpleHaBeginCheckpointResponse SimpleHaLeaderService::BeginCheckpoint() {
+    SimpleHaBeginCheckpointResponse response;
     if (!wal_ || !master_) {
         response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
         return response;
     }
 
-    std::lock_guard<std::mutex> lock(snapshot_mutex_);
-    if (!snapshots_enabled_.load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> lock(checkpoint_mutex_);
+    if (!checkpoints_enabled_.load(std::memory_order_acquire)) {
         response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
         return response;
     }
-    const auto state = wal_->SnapshotState();
+    const auto state = wal_->GetState();
     // A durable-finalize callback may still be running for an entry at or
     // below the durable prefix. Wait for those callbacks so the scan cannot
     // capture state the OpLog has already superseded (for example an erase
@@ -186,75 +186,76 @@ SimpleHaBeginSnapshotResponse SimpleHaLeaderService::BeginSnapshot() {
     constexpr auto kQuiesceTimeout = std::chrono::milliseconds(2000);
     if (!master_->WaitForSimpleHaCallbacks(state.durable_prefix.last_seq,
                                            kQuiesceTimeout)) {
-        LOG(WARNING) << "Simple HA snapshot base did not quiesce, base_seq="
+        LOG(WARNING) << "Simple HA checkpoint base did not quiesce, base_seq="
                      << state.durable_prefix.last_seq;
         response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
         return response;
     }
-    SnapshotSession session;
-    session.snapshot_id = std::to_string(state.durable_prefix.batch_id) + "-" +
-                          state.incarnation;
+    CheckpointSession session;
+    session.checkpoint_id =
+        std::to_string(state.durable_prefix.batch_id) + "-" +
+        state.incarnation;
     session.incarnation = state.incarnation;
     session.base = state.durable_prefix;
     master_->VisitTenants([&session](const TenantId& tenant) {
         session.tenants.push_back(tenant.value());
     });
     std::sort(session.tenants.begin(), session.tenants.end());
-    // Only one standby consumes a snapshot at a time; replace a stale session
+    // Only one standby consumes a checkpoint at a time; replace a stale session
     // rather than wedging the next attempt.
-    snapshot_ = std::move(session);
+    checkpoint_ = std::move(session);
 
     response.success = true;
-    response.snapshot_id = snapshot_->snapshot_id;
-    response.incarnation = snapshot_->incarnation;
-    response.base_batch_id = snapshot_->base.batch_id;
-    response.base_seq = snapshot_->base.last_seq;
-    response.segments = SnapshotSegments();
+    response.checkpoint_id = checkpoint_->checkpoint_id;
+    response.incarnation = checkpoint_->incarnation;
+    response.base_batch_id = checkpoint_->base.batch_id;
+    response.base_seq = checkpoint_->base.last_seq;
+    response.segments = CheckpointSegments();
     return response;
 }
 
-SimpleHaSnapshotChunkResponse SimpleHaLeaderService::SnapshotChunk(
-    SimpleHaSnapshotChunkRequest request) {
-    SimpleHaSnapshotChunkResponse response;
+SimpleHaCheckpointChunkResponse SimpleHaLeaderService::CheckpointChunk(
+    SimpleHaCheckpointChunkRequest request) {
+    SimpleHaCheckpointChunkResponse response;
     if (!wal_ || !master_) {
         response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
         return response;
     }
-    std::lock_guard<std::mutex> lock(snapshot_mutex_);
-    if (!snapshots_enabled_.load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> lock(checkpoint_mutex_);
+    if (!checkpoints_enabled_.load(std::memory_order_acquire)) {
         response.error_code = toInt(ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
         return response;
     }
-    if (!snapshot_ || snapshot_->snapshot_id != request.snapshot_id) {
+    if (!checkpoint_ || checkpoint_->checkpoint_id != request.checkpoint_id) {
         response.error_code = toInt(ErrorCode::INVALID_PARAMS);
         return response;
     }
 
-    const auto state = wal_->SnapshotState();
-    if (state.incarnation != snapshot_->incarnation ||
-        (snapshot_->base.batch_id != UINT64_MAX &&
-         state.first_batch_id > snapshot_->base.batch_id + 1)) {
+    const auto state = wal_->GetState();
+    if (state.incarnation != checkpoint_->incarnation ||
+        (checkpoint_->base.batch_id != UINT64_MAX &&
+         state.first_batch_id > checkpoint_->base.batch_id + 1)) {
         // The ring overwrote base+1 while the scan was in flight. The standby
-        // must restart from a new snapshot instead of replaying a gap.
-        snapshot_.reset();
+        // must restart from a new checkpoint instead of replaying a gap.
+        checkpoint_.reset();
         response.error_code = toInt(ErrorCode::INCOMPLETE_OPLOG_CATCH_UP);
         return response;
     }
 
-    auto& session = *snapshot_;
+    auto& session = *checkpoint_;
     // The session has one consumer. A retry with a stale cursor (for example
     // after a lost response) cannot be served without re-staging a shard, so
-    // reject it and require a fresh BeginSnapshot instead of silently skipping
-    // entries.
+    // reject it and require a fresh BeginCheckpoint instead of silently
+    // skipping entries.
     if (request.tenant_index != session.tenant_index ||
         request.shard_index != session.shard_index ||
         request.offset != session.staged_offset) {
-        snapshot_.reset();
+        checkpoint_.reset();
         response.error_code = toInt(ErrorCode::INVALID_PARAMS);
         return response;
     }
     const uint32_t max_entries =
-        request.max_entries == 0 ? snapshot_chunk_entries_
+        request.max_entries == 0 ? checkpoint_chunk_entries_
                                  : request.max_entries;
 
     while (session.staged_offset >= session.staged.size() && !session.done) {
@@ -271,7 +272,7 @@ SimpleHaSnapshotChunkResponse SimpleHaLeaderService::SnapshotChunk(
             auto cursor = master_->ReadCursor(
                 tenant, {session.shard_index, MasterService::kNumShards});
             for (auto object : cursor) {
-                // Snapshot the same post-image the OpLog would carry: only
+                // Capture the same post-image the OpLog would carry: only
                 // completed replicas are readable. An in-flight PutStart is
                 // represented by PROCESSING replicas and must not leak into a
                 // recovery baseline; its later PUT_END arrives through the
@@ -285,7 +286,7 @@ SimpleHaSnapshotChunkResponse SimpleHaLeaderService::SnapshotChunk(
                 if (completed.empty()) {
                     continue;
                 }
-                session.staged.push_back(SimpleHaSnapshotEntry{
+                session.staged.push_back(SimpleHaCheckpointEntry{
                     .tenant_id = session.tenants[session.tenant_index],
                     .key = object.key(),
                     .payload =
@@ -321,7 +322,7 @@ SimpleHaSnapshotChunkResponse SimpleHaLeaderService::SnapshotChunk(
     response.next_offset = static_cast<uint32_t>(session.staged_offset);
     response.done = session.done && session.staged_offset >= session.staged.size();
     if (response.done) {
-        snapshot_.reset();
+        checkpoint_.reset();
     }
     return response;
 }
@@ -329,7 +330,7 @@ SimpleHaSnapshotChunkResponse SimpleHaLeaderService::SnapshotChunk(
 SimpleHaProbeResponse SimpleHaLeaderService::Probe() {
     SimpleHaProbeResponse response;
     if (wal_) {
-        const auto state = wal_->SnapshotState();
+        const auto state = wal_->GetState();
         response.success = true;
         response.incarnation = state.incarnation;
         response.has_data = state.has_data;

@@ -10,7 +10,7 @@ namespace mooncake {
 
 // Wire types for the leader-served Simple HA protocol. Payload blobs are the
 // same struct_pack MetadataPayload used by the batch OpLog, so a standby can
-// apply snapshot entries and WAL entries without a second codec.
+// apply checkpoint entries and WAL entries without a second codec.
 
 struct SimpleHaGetStateResponse {
     bool success{false};
@@ -63,49 +63,49 @@ struct SimpleHaSegmentEntry {
 YLT_REFL(SimpleHaSegmentEntry, segment_name, transport_endpoint, capacity,
          is_memory_segment, file_path);
 
-struct SimpleHaSnapshotEntry {
+struct SimpleHaCheckpointEntry {
     std::string tenant_id;
     std::string key;
     // struct_pack MetadataPayload bytes.
     std::string payload;
 };
-YLT_REFL(SimpleHaSnapshotEntry, tenant_id, key, payload);
+YLT_REFL(SimpleHaCheckpointEntry, tenant_id, key, payload);
 
-struct SimpleHaBeginSnapshotResponse {
+struct SimpleHaBeginCheckpointResponse {
     bool success{false};
     int32_t error_code{0};
-    std::string snapshot_id;
+    std::string checkpoint_id;
     std::string incarnation;
     uint64_t base_batch_id{0};
     uint64_t base_seq{0};
     std::vector<SimpleHaSegmentEntry> segments;
 };
-YLT_REFL(SimpleHaBeginSnapshotResponse, success, error_code, snapshot_id,
+YLT_REFL(SimpleHaBeginCheckpointResponse, success, error_code, checkpoint_id,
          incarnation, base_batch_id, base_seq, segments);
 
-struct SimpleHaSnapshotChunkRequest {
-    std::string snapshot_id;
+struct SimpleHaCheckpointChunkRequest {
+    std::string checkpoint_id;
     uint32_t tenant_index{0};
     uint32_t shard_index{0};
     uint32_t offset{0};
     uint32_t max_entries{1024};
 };
-YLT_REFL(SimpleHaSnapshotChunkRequest, snapshot_id, tenant_index, shard_index,
-         offset, max_entries);
+YLT_REFL(SimpleHaCheckpointChunkRequest, checkpoint_id, tenant_index,
+         shard_index, offset, max_entries);
 
-struct SimpleHaSnapshotChunkResponse {
+struct SimpleHaCheckpointChunkResponse {
     bool success{false};
     int32_t error_code{0};
     std::string incarnation;
     uint64_t base_batch_id{0};
     uint64_t base_seq{0};
-    std::vector<SimpleHaSnapshotEntry> entries;
+    std::vector<SimpleHaCheckpointEntry> entries;
     uint32_t next_tenant_index{0};
     uint32_t next_shard_index{0};
     uint32_t next_offset{0};
     bool done{false};
 };
-YLT_REFL(SimpleHaSnapshotChunkResponse, success, error_code, incarnation,
+YLT_REFL(SimpleHaCheckpointChunkResponse, success, error_code, incarnation,
          base_batch_id, base_seq, entries, next_tenant_index, next_shard_index,
          next_offset, done);
 

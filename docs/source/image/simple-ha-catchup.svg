@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" role="img" aria-label="WAL 环形缓冲区：first 101、last 200；applied 150 追得上，applied 95 出现 gap 需要全量快照">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" role="img" aria-label="WAL 环形缓冲区：first 101、last 200；applied 150 追得上，applied 95 出现 gap 需要全量 checkpoint">
   <style>
     .d-box { fill: #fbfcfa; stroke: #b7c4be; }
     .d-box-muted { fill: #e9eeeb; stroke: #d4dcd7; }

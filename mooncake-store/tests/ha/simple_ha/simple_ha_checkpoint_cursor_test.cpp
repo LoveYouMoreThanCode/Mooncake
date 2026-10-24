@@ -53,29 +53,29 @@ Segment MakeSegment(const std::string& name) {
 struct WalkResult {
     bool ok{true};
     ErrorCode error{ErrorCode::OK};
-    std::vector<SimpleHaSnapshotEntry> entries;
+    std::vector<SimpleHaCheckpointEntry> entries;
     int chunk_calls{0};
     // The request that produced a page whose cursor advanced within a shard.
-    std::optional<SimpleHaSnapshotChunkRequest> paged_request;
-    std::optional<SimpleHaSnapshotChunkResponse> paged_response;
+    std::optional<SimpleHaCheckpointChunkRequest> paged_request;
+    std::optional<SimpleHaCheckpointChunkResponse> paged_response;
 };
 
-WalkResult WalkSnapshot(SimpleHaLeaderService& leader,
-                        const SimpleHaBeginSnapshotResponse& begin,
-                        uint32_t max_entries) {
+WalkResult WalkCheckpoint(SimpleHaLeaderService& leader,
+                          const SimpleHaBeginCheckpointResponse& begin,
+                          uint32_t max_entries) {
     WalkResult walk;
     uint32_t tenant_index = 0;
     uint32_t shard_index = 0;
     uint32_t offset = 0;
     for (int i = 0; i < 200000; ++i) {
-        SimpleHaSnapshotChunkRequest request{
-            .snapshot_id = begin.snapshot_id,
+        SimpleHaCheckpointChunkRequest request{
+            .checkpoint_id = begin.checkpoint_id,
             .tenant_index = tenant_index,
             .shard_index = shard_index,
             .offset = offset,
             .max_entries = max_entries,
         };
-        const auto response = leader.SnapshotChunk(request);
+        const auto response = leader.CheckpointChunk(request);
         ++walk.chunk_calls;
         if (!response.success) {
             walk.ok = false;
@@ -108,7 +108,7 @@ WalkResult WalkSnapshot(SimpleHaLeaderService& leader,
 }
 
 std::map<std::string, int> CountKeys(
-    const std::vector<SimpleHaSnapshotEntry>& entries) {
+    const std::vector<SimpleHaCheckpointEntry>& entries) {
     std::map<std::string, int> counts;
     for (const auto& entry : entries) {
         ++counts[entry.key];
@@ -118,15 +118,15 @@ std::map<std::string, int> CountKeys(
 
 }  // namespace
 
-class SimpleHaSnapshotCursorTest : public ::testing::Test {
+class SimpleHaCheckpointCursorTest : public ::testing::Test {
    protected:
-    explicit SimpleHaSnapshotCursorTest(uint64_t wal_max_batches = 8192)
+    explicit SimpleHaCheckpointCursorTest(uint64_t wal_max_batches = 8192)
         : service_(MakeConfig(wal_max_batches)),
           leader_(service_, /*port=*/0, /*address=*/"127.0.0.1",
-                  /*snapshot_chunk_entries=*/1024) {}
+                  /*checkpoint_chunk_entries=*/1024) {}
 
     void MountSegment(
-        const std::string& name = "simple_ha_snapshot_segment") {
+        const std::string& name = "simple_ha_checkpoint_segment") {
         segment_name_ = name;
         ASSERT_TRUE(
             service_.MountSegment(MakeSegment(name), client_id_).has_value());
@@ -174,19 +174,21 @@ class SimpleHaSnapshotCursorTest : public ::testing::Test {
     std::string segment_name_;
 };
 
-class SimpleHaSnapshotRingOverwriteTest : public SimpleHaSnapshotCursorTest {
+class SimpleHaCheckpointRingOverwriteTest
+    : public SimpleHaCheckpointCursorTest {
    protected:
-    SimpleHaSnapshotRingOverwriteTest()
-        : SimpleHaSnapshotCursorTest(/*wal_max_batches=*/1) {}
+    SimpleHaCheckpointRingOverwriteTest()
+        : SimpleHaCheckpointCursorTest(/*wal_max_batches=*/1) {}
 };
 
-TEST_F(SimpleHaSnapshotCursorTest, EmptySnapshotCompletesImmediately) {
-    const auto begin = leader_.BeginSnapshot();
+TEST_F(SimpleHaCheckpointCursorTest, EmptyCheckpointCompletesImmediately) {
+    const auto begin = leader_.BeginCheckpoint();
     ASSERT_TRUE(begin.success);
     EXPECT_TRUE(begin.segments.empty());
 
-    SimpleHaSnapshotChunkRequest request{.snapshot_id = begin.snapshot_id};
-    const auto chunk = leader_.SnapshotChunk(request);
+    SimpleHaCheckpointChunkRequest request{
+        .checkpoint_id = begin.checkpoint_id};
+    const auto chunk = leader_.CheckpointChunk(request);
     ASSERT_TRUE(chunk.success);
     EXPECT_TRUE(chunk.done);
     EXPECT_TRUE(chunk.entries.empty());
@@ -195,34 +197,35 @@ TEST_F(SimpleHaSnapshotCursorTest, EmptySnapshotCompletesImmediately) {
     EXPECT_EQ(chunk.incarnation, begin.incarnation);
 }
 
-TEST_F(SimpleHaSnapshotCursorTest,
-       DisableSnapshotsRejectsAndInvalidatesSessions) {
+TEST_F(SimpleHaCheckpointCursorTest,
+       DisableCheckpointsRejectsAndInvalidatesSessions) {
     MountSegment();
-    PutCompleted("disable_snapshots_key");
+    PutCompleted("disable_checkpoints_key");
     ASSERT_TRUE(WaitForWalLastBatch(1));
 
-    const auto begin = leader_.BeginSnapshot();
+    const auto begin = leader_.BeginCheckpoint();
     ASSERT_TRUE(begin.success);
 
     // Called before the serving map is drained.
-    leader_.DisableSnapshots();
+    leader_.DisableCheckpoints();
 
     // A session that started before the drain cannot be resumed, so its
     // consumer can never mark a truncated scan as complete.
-    SimpleHaSnapshotChunkRequest request{.snapshot_id = begin.snapshot_id};
-    const auto chunk = leader_.SnapshotChunk(request);
+    SimpleHaCheckpointChunkRequest request{
+        .checkpoint_id = begin.checkpoint_id};
+    const auto chunk = leader_.CheckpointChunk(request);
     EXPECT_FALSE(chunk.success);
     EXPECT_EQ(static_cast<ErrorCode>(chunk.error_code),
               ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
 
-    // No new snapshot may start against the draining map.
-    const auto second = leader_.BeginSnapshot();
+    // No new checkpoint may start against the draining map.
+    const auto second = leader_.BeginCheckpoint();
     EXPECT_FALSE(second.success);
     EXPECT_EQ(static_cast<ErrorCode>(second.error_code),
               ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS);
 
     // The frozen WAL stays readable for the promoting standby's tail
-    // catch-up; only snapshot serving is disabled.
+    // catch-up; only checkpoint serving is disabled.
     const auto state = leader_.GetState();
     ASSERT_TRUE(state.success);
     EXPECT_TRUE(state.is_leader);
@@ -232,20 +235,20 @@ TEST_F(SimpleHaSnapshotCursorTest,
     EXPECT_FALSE(pull.batches.empty());
 }
 
-TEST_F(SimpleHaSnapshotCursorTest, WalksEveryKeyExactlyOnce) {
+TEST_F(SimpleHaCheckpointCursorTest, WalksEveryKeyExactlyOnce) {
     MountSegment();
     constexpr int kObjects = 24;
     std::set<std::string> expected;
     for (int i = 0; i < kObjects; ++i) {
-        const std::string key = "snapshot-cursor-key-" + std::to_string(i);
+        const std::string key = "checkpoint-cursor-key-" + std::to_string(i);
         PutCompleted(key);
         expected.insert(key);
     }
 
-    const auto begin = leader_.BeginSnapshot();
+    const auto begin = leader_.BeginCheckpoint();
     ASSERT_TRUE(begin.success);
 
-    const auto walk = WalkSnapshot(leader_, begin, /*max_entries=*/1);
+    const auto walk = WalkCheckpoint(leader_, begin, /*max_entries=*/1);
     ASSERT_TRUE(walk.ok) << toString(walk.error);
     const auto counts = CountKeys(walk.entries);
     EXPECT_EQ(counts.size(), expected.size());
@@ -257,7 +260,7 @@ TEST_F(SimpleHaSnapshotCursorTest, WalksEveryKeyExactlyOnce) {
     EXPECT_GT(walk.chunk_calls, 1);
 }
 
-TEST_F(SimpleHaSnapshotCursorTest, RejectsStaleCursorAndInvalidatesSession) {
+TEST_F(SimpleHaCheckpointCursorTest, RejectsStaleCursorAndInvalidatesSession) {
     MountSegment();
     // Two keys in one shard guarantee that the server pages within a shard.
     MasterServiceTestPeer peer(service_);
@@ -265,7 +268,7 @@ TEST_F(SimpleHaSnapshotCursorTest, RejectsStaleCursorAndInvalidatesSession) {
     std::pair<std::string, std::string> same_shard_keys;
     bool found_pair = false;
     for (int i = 0; i < 8192 && !found_pair; ++i) {
-        const std::string key = "snapshot-same-shard-" + std::to_string(i);
+        const std::string key = "checkpoint-same-shard-" + std::to_string(i);
         const size_t shard = peer.getShardIndex(key);
         auto it = first_by_shard.find(shard);
         if (it != first_by_shard.end()) {
@@ -279,68 +282,70 @@ TEST_F(SimpleHaSnapshotCursorTest, RejectsStaleCursorAndInvalidatesSession) {
     PutCompleted(same_shard_keys.first);
     PutCompleted(same_shard_keys.second);
 
-    const auto begin = leader_.BeginSnapshot();
+    const auto begin = leader_.BeginCheckpoint();
     ASSERT_TRUE(begin.success);
-    const auto walk = WalkSnapshot(leader_, begin, /*max_entries=*/1);
+    const auto walk = WalkCheckpoint(leader_, begin, /*max_entries=*/1);
     ASSERT_TRUE(walk.ok) << toString(walk.error);
     ASSERT_TRUE(walk.paged_request.has_value());
     ASSERT_TRUE(walk.paged_response.has_value());
 
     // Replaying the request whose cursor already advanced must fail and
     // invalidate the session rather than silently skipping entries.
-    const auto stale = leader_.SnapshotChunk(*walk.paged_request);
+    const auto stale = leader_.CheckpointChunk(*walk.paged_request);
     EXPECT_FALSE(stale.success);
     EXPECT_EQ(stale.error_code, toInt(ErrorCode::INVALID_PARAMS));
 
     // The session was reset, so even the correct next cursor is rejected.
-    SimpleHaSnapshotChunkRequest next{
-        .snapshot_id = begin.snapshot_id,
+    SimpleHaCheckpointChunkRequest next{
+        .checkpoint_id = begin.checkpoint_id,
         .tenant_index = walk.paged_response->next_tenant_index,
         .shard_index = walk.paged_response->next_shard_index,
         .offset = walk.paged_response->next_offset,
         .max_entries = 1,
     };
-    const auto after_reset = leader_.SnapshotChunk(next);
+    const auto after_reset = leader_.CheckpointChunk(next);
     EXPECT_FALSE(after_reset.success);
     EXPECT_EQ(after_reset.error_code, toInt(ErrorCode::INVALID_PARAMS));
 }
 
-TEST_F(SimpleHaSnapshotCursorTest, NewBeginSnapshotInvalidatesPreviousSession) {
+TEST_F(SimpleHaCheckpointCursorTest,
+       NewBeginCheckpointInvalidatesPreviousSession) {
     MountSegment();
-    PutCompleted("snapshot-session-old");
+    PutCompleted("checkpoint-session-old");
 
-    const auto first = leader_.BeginSnapshot();
+    const auto first = leader_.BeginCheckpoint();
     ASSERT_TRUE(first.success);
 
     const uint64_t last_before_new_key = leader_.GetState().last_batch_id;
-    PutCompleted("snapshot-session-new");
+    PutCompleted("checkpoint-session-new");
     ASSERT_TRUE(WaitForWalLastBatch(last_before_new_key + 1));
 
-    const auto second = leader_.BeginSnapshot();
+    const auto second = leader_.BeginCheckpoint();
     ASSERT_TRUE(second.success);
-    ASSERT_NE(first.snapshot_id, second.snapshot_id);
+    ASSERT_NE(first.checkpoint_id, second.checkpoint_id);
 
-    SimpleHaSnapshotChunkRequest request{.snapshot_id = first.snapshot_id};
-    const auto response = leader_.SnapshotChunk(request);
+    SimpleHaCheckpointChunkRequest request{
+        .checkpoint_id = first.checkpoint_id};
+    const auto response = leader_.CheckpointChunk(request);
     EXPECT_FALSE(response.success);
     EXPECT_EQ(response.error_code, toInt(ErrorCode::INVALID_PARAMS));
 }
 
-TEST_F(SimpleHaSnapshotCursorTest, SkipsObjectsWithoutCompletedReplicas) {
+TEST_F(SimpleHaCheckpointCursorTest, SkipsObjectsWithoutCompletedReplicas) {
     MountSegment();
-    PutCompleted("snapshot-completed-key");
-    PutStarted("snapshot-processing-key");
+    PutCompleted("checkpoint-completed-key");
+    PutStarted("checkpoint-processing-key");
 
-    const auto begin = leader_.BeginSnapshot();
+    const auto begin = leader_.BeginCheckpoint();
     ASSERT_TRUE(begin.success);
-    const auto walk = WalkSnapshot(leader_, begin, /*max_entries=*/16);
+    const auto walk = WalkCheckpoint(leader_, begin, /*max_entries=*/16);
     ASSERT_TRUE(walk.ok) << toString(walk.error);
     const auto counts = CountKeys(walk.entries);
-    EXPECT_EQ(counts.count("snapshot-completed-key"), 1u);
-    EXPECT_EQ(counts.count("snapshot-processing-key"), 0u);
+    EXPECT_EQ(counts.count("checkpoint-completed-key"), 1u);
+    EXPECT_EQ(counts.count("checkpoint-processing-key"), 0u);
 
     for (const auto& entry : walk.entries) {
-        if (entry.key != "snapshot-completed-key") {
+        if (entry.key != "checkpoint-completed-key") {
             continue;
         }
         MetadataPayload payload;
@@ -353,21 +358,22 @@ TEST_F(SimpleHaSnapshotCursorTest, SkipsObjectsWithoutCompletedReplicas) {
     }
 }
 
-TEST_F(SimpleHaSnapshotRingOverwriteTest, RejectsBaseOverwrittenByRing) {
+TEST_F(SimpleHaCheckpointRingOverwriteTest, RejectsBaseOverwrittenByRing) {
     MountSegment();
-    const auto begin = leader_.BeginSnapshot();
+    const auto begin = leader_.BeginCheckpoint();
     ASSERT_TRUE(begin.success);
 
     uint64_t last = leader_.GetState().last_batch_id;
-    PutCompleted("snapshot-ring-a");
+    PutCompleted("checkpoint-ring-a");
     ASSERT_TRUE(WaitForWalLastBatch(last + 1));
 
     last = leader_.GetState().last_batch_id;
-    PutCompleted("snapshot-ring-b");
+    PutCompleted("checkpoint-ring-b");
     ASSERT_TRUE(WaitForWalLastBatch(last + 1));
 
-    SimpleHaSnapshotChunkRequest request{.snapshot_id = begin.snapshot_id};
-    const auto response = leader_.SnapshotChunk(request);
+    SimpleHaCheckpointChunkRequest request{
+        .checkpoint_id = begin.checkpoint_id};
+    const auto response = leader_.CheckpointChunk(request);
     EXPECT_FALSE(response.success);
     EXPECT_EQ(response.error_code,
               toInt(ErrorCode::INCOMPLETE_OPLOG_CATCH_UP));

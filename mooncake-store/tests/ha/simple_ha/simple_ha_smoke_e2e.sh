@@ -174,7 +174,7 @@ start_master() {
     --simple_ha_rpc_address=127.0.0.1 \
     --simple_ha_rpc_port="$sim" \
     --simple_ha_pull_interval_ms=50 \
-    --simple_ha_snapshot_chunk_entries=8 \
+    --simple_ha_checkpoint_chunk_entries=8 \
     --logtostderr=1 >"$work/$name.log" 2>&1 &
   PIDS[$name]=$!
   ALL_PIDS+=("$!")

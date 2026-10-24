@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" role="img" aria-label="etcd 下方两个节点，主节点持有 KV 与 WAL，备节点从主拉取快照和 WAL">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" role="img" aria-label="etcd 下方两个节点，主节点持有 KV 与 WAL，备节点从主拉取 checkpoint 和 WAL">
   <style>
     .d-box { fill: #fbfcfa; stroke: #b7c4be; }
     .d-box-muted { fill: #e9eeeb; stroke: #d4dcd7; }
@@ -40,7 +40,7 @@
   <text x="310" y="121" text-anchor="middle" class="d-label" font-size="10">campaign / keepalive</text>
   <text x="590" y="121" text-anchor="middle" class="d-label" font-size="10">campaign / keepalive</text>
   <path d="M520 234 H380" class="d-accent-line" stroke-width="1.6" marker-end="url(#d1-a)"/>
-  <text x="450" y="224" text-anchor="middle" class="d-accent-text" font-size="10">pull snapshot / WAL</text>
+  <text x="450" y="224" text-anchor="middle" class="d-accent-text" font-size="10">pull checkpoint / WAL</text>
   
   <text x="18" y="228" class="d-label" font-size="10">clients</text>
   <path d="M62 244 H100" class="d-muted-line" stroke-width="1.2" marker-end="url(#d1-m)"/>

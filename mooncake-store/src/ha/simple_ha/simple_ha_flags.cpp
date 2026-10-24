@@ -6,9 +6,9 @@
 #include "default_config.h"
 #include "master_config.h"
 
-// Simple HA: leader-served in-memory WAL + snapshot, no etcd data plane.
+// Simple HA: leader-served in-memory WAL + checkpoint, no etcd data plane.
 DEFINE_bool(enable_simple_ha, false,
-            "Enable Simple HA: leader-served in-memory WAL and snapshot "
+            "Enable Simple HA: leader-served in-memory WAL and checkpoint "
             "replication instead of etcd-stored OpLog");
 DEFINE_string(simple_ha_peer_address, "",
               "Peer master's Simple HA RPC endpoint (host:port)");
@@ -22,8 +22,8 @@ DEFINE_uint64(simple_ha_wal_max_batches, 8192,
               "Maximum batches retained in the Simple HA in-memory WAL ring");
 DEFINE_uint64(simple_ha_wal_max_bytes, 256ULL * 1024 * 1024,
               "Maximum encoded bytes retained in the Simple HA WAL ring");
-DEFINE_uint32(simple_ha_snapshot_chunk_entries, 1024,
-              "Maximum snapshot entries returned per Simple HA RPC chunk");
+DEFINE_uint32(simple_ha_checkpoint_chunk_entries, 1024,
+              "Maximum checkpoint entries returned per Simple HA RPC chunk");
 
 namespace mooncake {
 
@@ -49,9 +49,9 @@ void InitSimpleHaConf(const DefaultConfig& default_config,
     default_config.GetUInt64("simple_ha_wal_max_bytes",
                              &master_config.simple_ha.wal_max_bytes,
                              FLAGS_simple_ha_wal_max_bytes);
-    default_config.GetUInt32("simple_ha_snapshot_chunk_entries",
-                             &master_config.simple_ha.snapshot_chunk_entries,
-                             FLAGS_simple_ha_snapshot_chunk_entries);
+    default_config.GetUInt32("simple_ha_checkpoint_chunk_entries",
+                             &master_config.simple_ha.checkpoint_chunk_entries,
+                             FLAGS_simple_ha_checkpoint_chunk_entries);
 }
 
 void LoadSimpleHaConfFromCmdline(MasterConfig& master_config, bool conf_set) {
@@ -93,12 +93,12 @@ void LoadSimpleHaConfFromCmdline(MasterConfig& master_config, bool conf_set) {
         !conf_set) {
         master_config.simple_ha.wal_max_bytes = FLAGS_simple_ha_wal_max_bytes;
     }
-    if ((google::GetCommandLineFlagInfo("simple_ha_snapshot_chunk_entries",
+    if ((google::GetCommandLineFlagInfo("simple_ha_checkpoint_chunk_entries",
                                         &info) &&
          !info.is_default) ||
         !conf_set) {
-        master_config.simple_ha.snapshot_chunk_entries =
-            FLAGS_simple_ha_snapshot_chunk_entries;
+        master_config.simple_ha.checkpoint_chunk_entries =
+            FLAGS_simple_ha_checkpoint_chunk_entries;
     }
 }
 

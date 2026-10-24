@@ -180,7 +180,7 @@ struct OrderedOpLogWriter::Impl {
     bool stop_requested{false};
     bool callback_stop_requested{false};
     // Highest sequence id whose durable callback has finished running.
-    // Advanced by the callback thread; read by snapshot barriers.
+    // Advanced by the callback thread; read by checkpoint barriers.
     uint64_t callback_applied_through{0};
     std::condition_variable callback_cv;
     ErrorCode last_error{ErrorCode::OK};

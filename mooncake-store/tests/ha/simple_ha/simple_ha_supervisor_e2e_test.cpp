@@ -383,7 +383,7 @@ class SimpleHaSupervisorE2ETest : public ::testing::Test {
             "--simple_ha_rpc_address=127.0.0.1",
             "--simple_ha_rpc_port=" + std::to_string(node.simple_ha_port),
             "--simple_ha_pull_interval_ms=50",
-            "--simple_ha_snapshot_chunk_entries=8",
+            "--simple_ha_checkpoint_chunk_entries=8",
             "--logtostderr=1",
         };
         return node.process.Start(
@@ -595,10 +595,10 @@ TEST_F(SimpleHaSupervisorE2ETest, MidMergeNewLeaderDeathKeepsOldLeaderRecords) {
 
     // Arm the failpoint only now: the old leader is the only node that will
     // merge from here on.
-    const auto arm = failpoint_dir_ / "simple_ha_snapshot_chunk_merged.arm";
-    const auto hit = failpoint_dir_ / "simple_ha_snapshot_chunk_merged.hit";
+    const auto arm = failpoint_dir_ / "simple_ha_checkpoint_chunk_merged.arm";
+    const auto hit = failpoint_dir_ / "simple_ha_checkpoint_chunk_merged.hit";
     const auto release =
-        failpoint_dir_ / "simple_ha_snapshot_chunk_merged.release";
+        failpoint_dir_ / "simple_ha_checkpoint_chunk_merged.release";
     {
         std::ofstream output(arm);
         ASSERT_TRUE(output.good());

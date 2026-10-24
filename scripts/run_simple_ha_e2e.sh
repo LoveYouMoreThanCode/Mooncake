@@ -13,7 +13,7 @@
 #
 # Options:
 #   --build-dir DIR   Build directory (default: build-ha-e2e)
-#   --jobs N          Parallel build jobs (default: nproc)
+#   --jobs N          Parallel build jobs (default: nproc/2)
 #   --skip-build      Reuse an existing build directory
 #   --skip-l3         Do not run the shell smoke
 #   --keep-work       Keep the L3 temp directory and logs
@@ -30,7 +30,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build-ha-e2e}"
-JOBS="${JOBS:-$(nproc)}"
+# Cap the default parallelism at half the CPU count: each compiler process
+# can hold a large translation unit in memory, so -j$(nproc) easily exhausts
+# the build host. See docs/source/design/store/simple-ha.md.
+DEFAULT_JOBS=$(( $(nproc) / 2 ))
+[[ "${DEFAULT_JOBS}" -lt 1 ]] && DEFAULT_JOBS=1
+JOBS="${JOBS:-${DEFAULT_JOBS}}"
 GOOGLETEST_SOURCE_DIR="${GOOGLETEST_SOURCE_DIR:-}"
 STRICT="${STRICT:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
@@ -200,7 +205,7 @@ build_targets=(
   simple_ha_wal_test
   simple_ha_callback_barrier_test
   simple_ha_restore_lease_test
-  simple_ha_snapshot_cursor_test
+  simple_ha_checkpoint_cursor_test
   simple_ha_drain_test
   simple_ha_l1_harness_test
   simple_ha_supervisor_e2e_test
@@ -230,7 +235,7 @@ fi
 
 # --- L1 --------------------------------------------------------------------
 
-l1_regex='^simple_ha_(wal|callback_barrier|restore_lease|snapshot_cursor|drain|l1_harness)_test$'
+l1_regex='^simple_ha_(wal|callback_barrier|restore_lease|checkpoint_cursor|drain|l1_harness)_test$'
 run_l1() {
   ctest --test-dir "${BUILD_DIR}" --output-on-failure --timeout 180 \
     --no-tests=error -R "${l1_regex}"

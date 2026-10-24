@@ -91,7 +91,7 @@ std::vector<OpLogBatchRecord> SimpleHaWal::Pull(uint64_t from_batch_id,
     return result;
 }
 
-SimpleHaWalState SimpleHaWal::SnapshotState() const {
+SimpleHaWalState SimpleHaWal::GetState() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return SimpleHaWalState{
         .incarnation = incarnation_,
@@ -175,7 +175,7 @@ tl::expected<void, ErrorCode> MasterService::DrainIntoPromotionContext(
 
     // The writer must already be stopped: its durable prefix has to describe
     // the same state as the map we are about to drain.
-    const auto wal_state = simple_ha_wal_->SnapshotState();
+    const auto wal_state = simple_ha_wal_->GetState();
 
     auto store = std::make_unique<StandbyMetadataStore>();
     ReplicaID max_replica_id = 0;
@@ -184,7 +184,7 @@ tl::expected<void, ErrorCode> MasterService::DrainIntoPromotionContext(
     // already stopped by the supervisor; taking both locks keeps the
     // background workers from mutating metadata between shards.
     std::unique_lock<std::shared_mutex> client_lock(client_mutex_);
-    std::unique_lock<std::shared_mutex> snapshot_lock(master_state_mutex_);
+    std::unique_lock<std::shared_mutex> checkpoint_lock(master_state_mutex_);
 
     std::vector<TenantId> tenants;
     VisitTenants([&tenants](const TenantId& tenant) {
@@ -230,7 +230,7 @@ tl::expected<void, ErrorCode> MasterService::DrainIntoPromotionContext(
 
                 // Objects with only in-flight replicas cannot be represented
                 // in a standby baseline; they are dropped, exactly as the
-                // snapshot scan would drop them.
+                // checkpoint scan would drop them.
                 if (!standby.replicas.empty() &&
                     !store->PutMetadata(tenant.value(), key, standby)) {
                     return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);

@@ -2670,7 +2670,7 @@ class MasterService {
     ErrorCode InitializeSimpleHaWriter();
     void InitializeSimpleHaWriterOrThrow();
     // Blocks until every durable-finalize callback through `sequence_id` has
-    // run, so a snapshot base taken at that prefix cannot miss a deferred map
+    // run, so a checkpoint base taken at that prefix cannot miss a deferred map
     // mutation (for example an erase that happens after the OpLog is durable).
     bool WaitForSimpleHaCallbacks(uint64_t sequence_id,
                                   std::chrono::milliseconds timeout);
